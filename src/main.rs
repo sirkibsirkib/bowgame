@@ -1,6 +1,8 @@
 use ggez::audio::SoundSource;
 use ggez::audio::Source;
 use ggez::event::EventHandler;
+use ggez::event::KeyCode;
+use ggez::event::KeyMods;
 use ggez::event::MouseButton;
 use ggez::{
     graphics::{
@@ -11,7 +13,14 @@ use ggez::{
     *,
 };
 
+#[derive(Default)]
+struct Pressing {
+    right: Option<bool>,
+    down: Option<bool>,
+}
+
 const BROWN: Color = Color { r: 0.5, g: 0.2, b: 0.2, a: 1. };
+const GREEN: Color = Color { r: 0.1, g: 0.4, b: 0.1, a: 1. };
 const RED: Color = Color { r: 1., g: 0., b: 0., a: 1. };
 const FLETCH_THICKNESS: f32 = 0.07;
 const FLETCH_LENGTH: f32 = 0.2;
@@ -19,6 +28,10 @@ const FLETCH_INDENT: f32 = 0.04;
 const HEAD_THICKNESS: f32 = 0.05;
 const HEAD_LENGTH: f32 = 0.13;
 const SHAFT_THICKNESS: f32 = 0.017;
+const LIMB_WIDTH: f32 = 70.0;
+const LIMB_DEPTH: f32 = 35.0;
+const WALK_SPEED: f32 = 4.0;
+
 fn main() {
     // Make a Context.
     let (mut ctx, mut event_loop) = ContextBuilder::new("my_game", "Cool Game Author")
@@ -26,11 +39,35 @@ fn main() {
         .expect("aieee, could not create ggez context!");
     let arrow_png = Image::new(&mut ctx, "/arrow.png").unwrap();
     let mut my_game = MyGame {
-        dude: [100., 90.].into(),
+        pressing: Pressing::default(),
+        limb: MeshBuilder::new()
+            .polygon(
+                DrawMode::fill(),
+                &[
+                    [1.0, 1.0],
+                    [0.89, 0.8],
+                    [0.64, 0.6],
+                    [0.4, 0.4],
+                    [0.1, 0.2],
+                    [0.0, 0.0],
+                    [0.1, 0.0],
+                    [0.2, 0.2],
+                    [0.5, 0.4],
+                    [0.71, 0.6],
+                    [0.94, 0.8],
+                ],
+                WHITE,
+            )
+            .unwrap()
+            .build(&mut ctx)
+            .unwrap(),
+        dude: [200., 290.].into(),
         arrow_batch: SpriteBatch::new(arrow_png),
+        loose1: ggez::audio::Source::new(&mut ctx, "/loose1.wav").unwrap(),
         twang1: ggez::audio::Source::new(&mut ctx, "/twang1.wav").unwrap(),
         twang2: ggez::audio::Source::new(&mut ctx, "/twang2.wav").unwrap(),
         twang3: ggez::audio::Source::new(&mut ctx, "/twang3.wav").unwrap(),
+        taut1: ggez::audio::Source::new(&mut ctx, "/taut1.wav").unwrap(),
         time: 0.,
         arrows: vec![],
         stuck_arrows: vec![],
@@ -79,14 +116,18 @@ fn main() {
 type Pt2 = na::Point2<f32>;
 
 struct MyGame {
+    pressing: Pressing,
     arrow_batch: SpriteBatch,
     dude: Pt2,
     twang1: Source,
+    taut1: Source,
+    loose1: Source,
     twang2: Source,
     twang3: Source,
     time: f32,
     arrowhead: Mesh,
     arrowshaft: Mesh,
+    limb: Mesh,
     unit_line: Mesh,
     arrows: Vec<Arrow>,
     stuck_arrows: Vec<StuckArrow>,
@@ -155,9 +196,57 @@ impl<'vec, T> Draining<'vec, T> {
 }
 
 impl EventHandler for MyGame {
+    fn key_down_event(
+        &mut self,
+        ctx: &mut Context,
+        keycode: KeyCode,
+        _keymods: KeyMods,
+        _repeat: bool,
+    ) {
+        match keycode {
+            KeyCode::W => self.pressing.down = Some(false),
+            KeyCode::A => self.pressing.right = Some(false),
+            KeyCode::S => self.pressing.down = Some(true),
+            KeyCode::D => self.pressing.right = Some(true),
+            KeyCode::Escape => ggez::event::quit(ctx),
+            _ => {}
+        }
+    }
+    fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
+        match keycode {
+            KeyCode::W if self.pressing.down == Some(false) => self.pressing.down = None,
+            KeyCode::A if self.pressing.right == Some(false) => self.pressing.right = None,
+            KeyCode::S if self.pressing.down == Some(true) => self.pressing.down = None,
+            KeyCode::D if self.pressing.right == Some(true) => self.pressing.right = None,
+            _ => {}
+        }
+    }
+
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
         self.time += 1.0;
         let mut draining = Draining::new(&mut self.arrows);
+        match self.pressing.right {
+            Some(true) => {
+                self.dude[0] +=
+                    if self.pressing.down.is_none() { WALK_SPEED } else { WALK_SPEED / 1.42 }
+            }
+            Some(false) => {
+                self.dude[0] -=
+                    if self.pressing.down.is_none() { WALK_SPEED } else { WALK_SPEED / 1.42 }
+            }
+            _ => {}
+        }
+        match self.pressing.down {
+            Some(true) => {
+                self.dude[1] +=
+                    if self.pressing.right.is_none() { WALK_SPEED } else { WALK_SPEED / 1.42 }
+            }
+            Some(false) => {
+                self.dude[1] -=
+                    if self.pressing.right.is_none() { WALK_SPEED } else { WALK_SPEED / 1.42 }
+            }
+            _ => {}
+        }
         while let Some(mut entry) = draining.next() {
             let arrow: &mut Arrow = entry.get_mut();
             arrow.pos += arrow.vel.coords;
@@ -191,6 +280,8 @@ impl EventHandler for MyGame {
             if let Some(first) = self.mouse_click_at.take() {
                 let second: Pt2 = [x, y].into();
                 let vel = (first - second.coords) * 0.214;
+                self.loose1.play().unwrap();
+                self.taut1.stop();
                 self.arrows.push(Arrow {
                     age: 0,
                     pos: self.dude,
@@ -203,8 +294,25 @@ impl EventHandler for MyGame {
         }
     }
 
+    fn mouse_motion_event(&mut self, _ctx: &mut Context, _x: f32, _y: f32, dx: f32, dy: f32) {
+        if self.mouse_click_at.is_some() && !self.taut1.playing() && (dx > 0. || dy > 0.) {
+            self.taut1.play().unwrap();
+        }
+    }
+
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        graphics::clear(ctx, BLACK);
+        graphics::clear(ctx, GREEN);
+        // the dude
+        graphics::draw(
+            ctx,
+            &self.unit_line,
+            DrawParam {
+                dest: self.dude.into(),
+                color: WHITE,
+                scale: [1.0, 1.0].into(),
+                ..Default::default()
+            },
+        )?;
         for arrow in &self.arrows {
             let dest = arrow.pos.into();
             let rotation = arrow.rot;
@@ -237,36 +345,94 @@ impl EventHandler for MyGame {
 
             self.arrow_batch.add(p);
         }
-        graphics::draw(ctx, &self.arrow_batch, DrawParam::default())?;
-        self.arrow_batch.clear();
         if let Some(start) = self.mouse_click_at {
             let end: Pt2 = ggez::input::mouse::position(ctx).into();
-            let dif = end - start.coords;
-            let rotation =
-                Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &dif.coords).angle();
-            graphics::draw(
-                ctx,
-                &self.unit_line,
-                DrawParam {
-                    dest: start.into(),
+            if start != end {
+                let dif = end - start.coords;
+                let difnorm = dif.coords.norm();
+                let dif_rotation =
+                    Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &dif.coords);
+                let dif_rotation_angle = dif_rotation.angle();
+                let dif_rotation_angle_neg = dif_rotation_angle + core::f32::consts::PI;
+                graphics::draw(
+                    ctx,
+                    &self.unit_line,
+                    DrawParam {
+                        dest: start.into(),
+                        color: WHITE,
+                        scale: [difnorm, 1.0].into(),
+                        rotation: dif_rotation_angle,
+                        ..Default::default()
+                    },
+                )?;
+                graphics::draw(
+                    ctx,
+                    &self.unit_line,
+                    DrawParam {
+                        dest: self.dude.into(),
+                        color: RED,
+                        scale: [difnorm * 4.0, 1.0].into(),
+                        rotation: dif_rotation_angle_neg,
+                        ..Default::default()
+                    },
+                )?;
+
+                //limbs
+                let pull = (difnorm * 4.0).powf(0.35);
+                graphics::draw(
+                    ctx,
+                    &self.limb,
+                    DrawParam {
+                        dest: self.dude.into(),
+                        color: RED,
+                        scale: [LIMB_DEPTH + pull, LIMB_WIDTH - pull].into(),
+                        rotation: dif_rotation_angle,
+                        ..Default::default()
+                    },
+                )?;
+                graphics::draw(
+                    ctx,
+                    &self.limb,
+                    DrawParam {
+                        dest: self.dude.into(),
+                        color: RED,
+                        scale: [LIMB_DEPTH + pull, -LIMB_WIDTH + pull].into(),
+                        rotation: dif_rotation_angle,
+                        ..Default::default()
+                    },
+                )?;
+                // notched arrow
+                // TODO below this line
+                let notch_shift = dif.coords * (pull * 2.5 + LIMB_DEPTH) / difnorm;
+                let notch_at = self.dude + notch_shift;
+                let p = DrawParam {
+                    dest: notch_at.into(),
                     color: WHITE,
-                    scale: [dif.coords.norm(), 1.0].into(),
-                    rotation,
+                    scale: [40. / 230.; 2].into(),
+                    rotation: dif_rotation_angle_neg,
                     ..Default::default()
-                },
-            )?;
-            graphics::draw(
-                ctx,
-                &self.unit_line,
-                DrawParam {
-                    dest: self.dude.into(),
-                    color: RED,
-                    scale: [dif.coords.norm() * 4.0, 1.0].into(),
-                    rotation: rotation + core::f32::consts::PI,
-                    ..Default::default()
-                },
-            )?;
+                };
+                self.arrow_batch.add(p);
+
+                let p1 = Pt2::new(-LIMB_DEPTH - pull, -LIMB_WIDTH + pull);
+                let theta = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &p1.coords);
+                let pt_thetad = dif_rotation * (theta * p1);
+                graphics::draw(
+                    ctx,
+                    &self.unit_line,
+                    DrawParam {
+                        dest: (self.dude + pt_thetad.coords).into(),
+                        color: WHITE,
+                        scale: [1.0, 1.0].into(),
+                        rotation: 0.0,
+                        ..Default::default()
+                    },
+                )?;
+                //strings
+            }
         }
+        graphics::draw(ctx, &self.arrow_batch, DrawParam::default())?;
+        self.arrow_batch.clear();
         graphics::present(ctx)
     }
 }
