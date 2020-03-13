@@ -193,8 +193,8 @@ impl EventHandler for MyGame {
         while let Some(mut entry) = draining.next() {
             let arrow: &mut Arrow = entry.get_mut();
             let nsq = arrow.vel.coords.norm_squared().sqr() + 1.;
-            arrow.vel += Pt3::new(0., 0., 0.3).coords;
-            arrow.vel *= nsq.powf(0.995) / nsq;
+            arrow.vel += Pt3::new(0., 0., 0.5).coords; // gravity
+            arrow.vel *= nsq.powf(0.997) / nsq;
             arrow.pos += arrow.vel.coords;
             if arrow.pos[2] >= 0. {
                 let index = unsafe { std::mem::transmute::<_, f32>(self.time) } as usize % 3;
@@ -219,7 +219,7 @@ impl EventHandler for MyGame {
                 if tautness != Tautness::None {
                     let second: Pt2 = [x, y].into();
                     let diff = (start - second.coords) * 0.08;
-                    let vel = [diff[0], diff[1] / ROOT_OF_2, -9.].into();
+                    let vel = [diff[0], diff[1] / ROOT_OF_2, -10.].into();
                     self.assets.audio.loose[0].play().unwrap();
                     self.assets.audio.taut[tautness as usize].stop();
                     self.arrows.push(Arrow { pos: self.dude + Pt3::new(0., 0., 2.).coords, vel });
@@ -275,7 +275,7 @@ impl EventHandler for MyGame {
         for arrow in &self.arrows {
             // shadow
             let dest = ortho(flatten(arrow.pos));
-            let [rotation, len] = Arrow::vel_to_rot_len_shadow(flatten(arrow.vel));
+            let [rotation, len] = Arrow::vel_to_rot_len_shadow(arrow.vel);
             let p = DrawParam {
                 dest: dest.into(),
                 scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
@@ -300,7 +300,7 @@ impl EventHandler for MyGame {
         for arrow in &mut self.stuck_arrows {
             // shadow
             let dest = ortho(flatten(arrow.pos));
-            let [rotation, len] = Arrow::vel_to_rot_len_shadow(flatten(arrow.vel));
+            let [rotation, len] = Arrow::vel_to_rot_len_shadow(arrow.vel);
             let p = DrawParam {
                 dest: dest.into(),
                 scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
