@@ -6,8 +6,8 @@ use ggez::event::KeyMods;
 use ggez::event::MouseButton;
 use ggez::{
     graphics::{
-        self, spritebatch::SpriteBatch, Color, DrawMode, DrawParam, Image, Mesh, MeshBuilder, Rect,
-        BLACK, WHITE,
+        self, spritebatch::SpriteBatch, Color, DrawMode, DrawParam, FilterMode, Image, Mesh,
+        MeshBuilder, Rect, BLACK, WHITE,
     },
     nalgebra::{self as na, geometry::Rotation2},
     *,
@@ -19,181 +19,104 @@ struct Pressing {
     down: Option<bool>,
 }
 
-const BROWN: Color = Color { r: 0.5, g: 0.2, b: 0.2, a: 1. };
-const GREEN: Color = Color { r: 0.1, g: 0.4, b: 0.1, a: 1. };
-const RED: Color = Color { r: 1., g: 0., b: 0., a: 1. };
-const FLETCH_THICKNESS: f32 = 0.07;
-const FLETCH_LENGTH: f32 = 0.2;
-const FLETCH_INDENT: f32 = 0.04;
-const HEAD_THICKNESS: f32 = 0.05;
-const HEAD_LENGTH: f32 = 0.13;
-const SHAFT_THICKNESS: f32 = 0.017;
-const LIMB_WIDTH: f32 = 70.0;
-const LIMB_DEPTH: f32 = 35.0;
-const WALK_SPEED: f32 = 4.0;
+mod assets;
+use assets::*;
+mod helper;
+use helper::*;
 
 fn main() {
     // Make a Context.
     let (mut ctx, mut event_loop) = ContextBuilder::new("my_game", "Cool Game Author")
         .build()
         .expect("aieee, could not create ggez context!");
-    let arrow_png = Image::new(&mut ctx, "/arrow.png").unwrap();
-    let mut my_game = MyGame {
-        pressing: Pressing::default(),
-        limb: MeshBuilder::new()
-            .polygon(
-                DrawMode::fill(),
-                &[
-                    [1.0, 1.0],
-                    [0.89, 0.8],
-                    [0.64, 0.6],
-                    [0.4, 0.4],
-                    [0.1, 0.2],
-                    [0.0, 0.0],
-                    [0.1, 0.0],
-                    [0.2, 0.2],
-                    [0.5, 0.4],
-                    [0.71, 0.6],
-                    [0.94, 0.8],
-                ],
-                WHITE,
-            )
-            .unwrap()
-            .build(&mut ctx)
-            .unwrap(),
-        dude: [200., 290.].into(),
-        arrow_batch: SpriteBatch::new(arrow_png),
-        loose1: ggez::audio::Source::new(&mut ctx, "/loose1.wav").unwrap(),
-        twang1: ggez::audio::Source::new(&mut ctx, "/twang1.wav").unwrap(),
-        twang2: ggez::audio::Source::new(&mut ctx, "/twang2.wav").unwrap(),
-        twang3: ggez::audio::Source::new(&mut ctx, "/twang3.wav").unwrap(),
-        taut1: ggez::audio::Source::new(&mut ctx, "/taut1.wav").unwrap(),
-        time: 0.,
-        arrows: vec![],
-        stuck_arrows: vec![],
-        mouse_click_at: None,
-        arrowhead: MeshBuilder::new()
-            .triangles(
-                &[[0., -HEAD_THICKNESS], [HEAD_LENGTH, 0.], [0., HEAD_THICKNESS]],
-                graphics::WHITE,
-            )
-            .unwrap()
-            .build(&mut ctx)
-            .unwrap(),
-        unit_line: MeshBuilder::new()
-            .line(&[[0., 0.], [1., 0.]], 1., graphics::WHITE)
-            .unwrap()
-            .build(&mut ctx)
-            .unwrap(),
-        arrowshaft: {
-            let mut q = MeshBuilder::new();
-            q.polygon(
-                DrawMode::fill(),
-                &[
-                    [-0.9, -FLETCH_THICKNESS],
-                    [-0.9 + FLETCH_LENGTH, -FLETCH_THICKNESS],
-                    [-0.9 + FLETCH_LENGTH + FLETCH_INDENT, -0.],
-                    [-0.9 + FLETCH_LENGTH, FLETCH_THICKNESS],
-                    [-0.9, FLETCH_THICKNESS],
-                    [-0.9 + FLETCH_INDENT, 0.],
-                ],
-                RED,
-            )
-            .unwrap();
-            q.rectangle(
-                DrawMode::fill(),
-                Rect { w: -0.9, h: SHAFT_THICKNESS * 2., x: 0., y: -SHAFT_THICKNESS },
-                BROWN,
-            );
-            q.build(&mut ctx).unwrap()
-        },
-    };
+
+    let mut my_game = MyGame::new(&mut ctx);
     match event::run(&mut ctx, &mut event_loop, &mut my_game) {
         Ok(_) => println!("Exited cleanly."),
         Err(e) => println!("Error occured: {}", e),
     }
 }
 type Pt2 = na::Point2<f32>;
+type Pt3 = na::Point3<f32>;
+
+struct Assets {
+    audio: AudioAssets,
+    tex: TexAssets,
+}
+struct TexAssets {
+    arrow_batch: SpriteBatch,
+    // arrowhead: Mesh,
+    // arrowshaft: Mesh,
+    limb: Mesh,
+    unit_line: Mesh,
+    archer_back: Image,
+    archer: Image,
+    archer_front: Image,
+}
+struct AudioAssets {
+    taut: [Source; 4],
+    loose: [Source; 1],
+    twang: [Source; 3],
+}
 
 struct MyGame {
     pressing: Pressing,
-    arrow_batch: SpriteBatch,
     dude: Pt2,
-    twang1: Source,
-    taut1: Source,
-    loose1: Source,
-    twang2: Source,
-    twang3: Source,
     time: f32,
-    arrowhead: Mesh,
-    arrowshaft: Mesh,
-    limb: Mesh,
-    unit_line: Mesh,
     arrows: Vec<Arrow>,
     stuck_arrows: Vec<StuckArrow>,
-    mouse_click_at: Option<Pt2>,
+    nocked: Option<Nocked>,
+    assets: Assets,
+}
+struct Nocked {
+    start: Pt2,
+    tautness: Tautness,
+}
+fn pt2_to_pt3(xy: Pt2, z: f32) -> Pt3 {
+    Pt3::new(xy[0], xy[1], z)
 }
 struct Arrow {
-    pos: Pt2,
-    vel: Pt2,
-    rot: f32,
-    age: u8,
+    pos: Pt3,
+    vel: Pt3,
 }
 struct StuckArrow {
-    pos: na::Point2<f32>,
-    rot: f32,
+    pos: Pt2,
+    rot_xy: f32,
     vibration_amplitude: f32,
 }
 impl Arrow {
-    fn vel_to_rot(vel: Pt2) -> f32 {
-        Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &vel.coords).angle()
+    fn rot_xy(&self) -> f32 {
+        Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &self.vel.xy().coords).angle()
     }
     fn stick(self) -> StuckArrow {
-        let Self { pos, rot, .. } = self;
-        StuckArrow { pos, rot, vibration_amplitude: 0.5 }
-    }
-}
-// invariant: self.0.next_index - 1 is within bounds of self.0.v
-struct Entry<'vec, 'entry, T> {
-    draining: &'entry mut Draining<'vec, T>,
-}
-
-impl<'vec, 'entry, T> Entry<'vec, 'entry, T> {
-    fn take(self) -> T {
-        self.draining.next_index -= 1; // breaks invariant. no longer off-by-one
-        self.draining.vec.remove(self.draining.next_index)
-    }
-    fn get_mut(&mut self) -> &mut T {
-        // invariant: off by one
-        unsafe { self.draining.vec.get_unchecked_mut(self.draining.next_index - 1) }
+        StuckArrow { pos: self.pos.xy(), rot_xy: self.rot_xy(), vibration_amplitude: 0.5 }
     }
 }
 
-// two implicit states:
-// 1. not borrowed by Entry: self.next index is the index of the next element
-// 2. borrowed by Entry: self.next_index is 1 greater than the index of next element
-//
-// conceptually, could be alternatively achieved by either:
-// 1. always being in state 2, where Entry gets the old copy of next_index (so its no longer off-by-one for Entry)
-// 2. incrementing next_index whenever Entry is DROPPED. (drops are not guaranteed => unsafe!)
-struct Draining<'vec, T> {
-    next_index: usize, // always off by one while Draining is borrowed by an Entry
-    vec: &'vec mut Vec<T>,
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum Tautness {
+    None,
+    Low,
+    Med,
+    High,
 }
-impl<'vec, T> Draining<'vec, T> {
-    fn new(vec: &'vec mut Vec<T>) -> Self {
-        Self { vec, next_index: 0 }
-    }
-    fn next<'entry>(&'entry mut self) -> Option<Entry<'vec, 'entry, T>> {
-        // checks invariant
-        if self.next_index < self.vec.len() {
-            self.next_index += 1;
-            Some(Entry { draining: self })
-        } else {
-            None
+impl Tautness {
+    fn level(self) -> usize {
+        match self {
+            Tautness::None => 0,
+            Tautness::Low => 1,
+            Tautness::Med => 2,
+            Tautness::High => 3,
         }
     }
 }
+
+trait Squarable: core::ops::Mul + Copy {
+    fn sqr(self) -> <Self as core::ops::Mul>::Output {
+        self * self
+    }
+}
+impl<T: core::ops::Mul + Copy> Squarable for T {}
 
 impl EventHandler for MyGame {
     fn key_down_event(
@@ -249,18 +172,14 @@ impl EventHandler for MyGame {
         }
         while let Some(mut entry) = draining.next() {
             let arrow: &mut Arrow = entry.get_mut();
+            let nsq = arrow.vel.coords.norm_squared().sqr() + 1.;
+            arrow.vel += Pt3::new(0., 0., 0.3).coords;
+            arrow.vel *= nsq.powf(0.994) / nsq;
             arrow.pos += arrow.vel.coords;
-            if arrow.age > 17 {
-                match unsafe { std::mem::transmute::<_, f32>(self.time) } as usize % 3 {
-                    0 => &mut self.twang1,
-                    1 => &mut self.twang2,
-                    _ => &mut self.twang3,
-                }
-                .play()
-                .unwrap();
+            if arrow.pos[2] >= 0. {
+                let index = unsafe { std::mem::transmute::<_, f32>(self.time) } as usize % 3;
+                self.assets.audio.twang[index].play().unwrap();
                 self.stuck_arrows.push(entry.take().stick())
-            } else {
-                arrow.age += 1;
             }
         }
         for stuck_arrow in &mut self.stuck_arrows {
@@ -271,168 +190,231 @@ impl EventHandler for MyGame {
 
     fn mouse_button_down_event(&mut self, _ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
         if let MouseButton::Left = button {
-            self.mouse_click_at = Some([x, y].into());
+            let start = [x, y].into();
+            self.nocked = Some(Nocked { start, tautness: Tautness::None });
         }
     }
 
     fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
         if let MouseButton::Left = button {
-            if let Some(first) = self.mouse_click_at.take() {
-                let second: Pt2 = [x, y].into();
-                let vel = (first - second.coords) * 0.214;
-                self.loose1.play().unwrap();
-                self.taut1.stop();
-                self.arrows.push(Arrow {
-                    age: 0,
-                    pos: self.dude,
-                    vel,
-                    rot: Arrow::vel_to_rot(vel),
-                });
+            if let Some(Nocked { start, tautness }) = self.nocked.take() {
+                if tautness != Tautness::None {
+                    let second: Pt2 = [x, y].into();
+                    let vel_xy = (start - second.coords) * 0.08;
+                    self.assets.audio.loose[0].play().unwrap();
+                    self.assets.audio.taut[tautness as usize].stop();
+                    self.arrows.push(Arrow {
+                        pos: pt2_to_pt3(self.dude, 2.0),
+                        vel: pt2_to_pt3(vel_xy, -15.0),
+                    });
+                }
             }
         } else {
             self.stuck_arrows.extend(self.arrows.drain(..).map(Arrow::stick));
         }
     }
 
-    fn mouse_motion_event(&mut self, _ctx: &mut Context, _x: f32, _y: f32, dx: f32, dy: f32) {
-        if self.mouse_click_at.is_some() && !self.taut1.playing() && (dx > 0. || dy > 0.) {
-            self.taut1.play().unwrap();
+    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32, _dx: f32, _dy: f32) {
+        if let Some(Nocked { start, tautness }) = &mut self.nocked {
+            let at: Pt2 = [x, y].into();
+            let diff = at - start.coords;
+            let new_tautness = match diff.coords.norm_squared() {
+                x if x < 50.0f32.sqr() => Tautness::None,
+                x if x < 100.0f32.sqr() => Tautness::Low,
+                x if x < 150.0f32.sqr() => Tautness::Med,
+                _ => Tautness::High,
+            };
+            if *tautness != new_tautness {
+                self.assets.audio[*tautness].stop();
+                self.assets.audio[new_tautness].play().unwrap();
+                *tautness = new_tautness;
+            }
         }
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         graphics::clear(ctx, GREEN);
         // the dude
-        graphics::draw(
-            ctx,
-            &self.unit_line,
-            DrawParam {
-                dest: self.dude.into(),
-                color: WHITE,
-                scale: [1.0, 1.0].into(),
-                ..Default::default()
-            },
-        )?;
+        let dude_param = DrawParam {
+            src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
+            dest: self.dude.into(),
+            color: WHITE,
+            scale: [2.0; 2].into(),
+            offset: [0.5, 0.5].into(),
+            ..Default::default()
+        };
         for arrow in &self.arrows {
-            let dest = arrow.pos.into();
-            let rotation = arrow.rot;
             let p = DrawParam {
-                src: Rect { x: 0., y: 0., h: 0.1, w: 1. },
-                dest,
+                dest: [arrow.pos[0], arrow.pos[1] + arrow.pos[2]].into(),
                 color: WHITE,
-                scale: [40. / 230.; 2].into(),
-                rotation,
+                scale: [40. / 32.; 2].into(),
+                rotation: arrow.rot_xy(),
                 offset: [0.95, 0.5].into(),
                 ..Default::default()
             };
-            self.arrow_batch.add(p);
+            self.assets.tex.arrow_batch.add(p);
+            self.assets.tex.arrow_batch.add(DrawParam {
+                dest: arrow.pos.xy().into(),
+                color: BLACK,
+                ..p
+            });
             // graphics::draw(ctx, &self.arrowhead, p)?;
         }
         for stuck_arrow in &mut self.stuck_arrows {
             let dest = stuck_arrow.pos.into();
             let rotation =
-                stuck_arrow.rot + (self.time * 3.0).sin() * stuck_arrow.vibration_amplitude;
+                stuck_arrow.rot_xy + (self.time * 3.0).sin() * stuck_arrow.vibration_amplitude;
             let p = DrawParam {
-                src: Rect { x: 0., y: 0., h: 0.1, w: 1. },
                 dest,
                 color: WHITE,
-                scale: [40. / 230.; 2].into(),
+                scale: [40. / 32.; 2].into(),
                 rotation,
                 offset: [0.95, 0.5].into(),
                 ..Default::default()
             };
             // graphics::draw(ctx, &self.arrowshaft, p)?;
 
-            self.arrow_batch.add(p);
+            self.assets.tex.arrow_batch.add(p);
         }
-        if let Some(start) = self.mouse_click_at {
-            let end: Pt2 = ggez::input::mouse::position(ctx).into();
-            if start != end {
+        // let x = match self.nocked.as_ref().map(|x| x.tautness) {
+        //     None => 0.0,
+        //     Some(Tautness::None) => 0.2,
+        //     Some(Tautness::Low) => 0.4,
+        //     Some(Tautness::Med) => 0.6,
+        //     Some(Tautness::High) => 0.6,
+        // };
+        // let src = Rect { x, y: 0., h: 0.2, w: 0.2 };
+        let end: Pt2 = ggez::input::mouse::position(ctx).into();
+        match self.nocked {
+            Some(Nocked { start, tautness }) if start != end => {
                 let dif = end - start.coords;
                 let difnorm = dif.coords.norm();
                 let dif_rotation =
                     Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &dif.coords);
                 let dif_rotation_angle = dif_rotation.angle();
-                let dif_rotation_angle_neg = dif_rotation_angle + core::f32::consts::PI;
+                // let dif_rotation_angle_neg = dif_rotation_angle + core::f32::consts::PI;
+
+                let draw_angle = if tautness.level() >= 2 {
+                    dif_rotation_angle + core::f32::consts::PI
+                } else {
+                    0.
+                };
+
+                let src = Rect { x: 0.2 * tautness.level() as f32, y: 0., h: 0.2, w: 0.2 };
                 graphics::draw(
                     ctx,
-                    &self.unit_line,
-                    DrawParam {
-                        dest: start.into(),
-                        color: WHITE,
-                        scale: [difnorm, 1.0].into(),
-                        rotation: dif_rotation_angle,
-                        ..Default::default()
-                    },
+                    &self.assets.tex.archer_back,
+                    DrawParam { src, rotation: draw_angle, ..dude_param },
                 )?;
+                graphics::draw(ctx, &self.assets.tex.archer, dude_param)?;
                 graphics::draw(
                     ctx,
-                    &self.unit_line,
-                    DrawParam {
-                        dest: self.dude.into(),
-                        color: RED,
-                        scale: [difnorm * 4.0, 1.0].into(),
-                        rotation: dif_rotation_angle_neg,
-                        ..Default::default()
-                    },
+                    &self.assets.tex.archer_front,
+                    DrawParam { src, rotation: draw_angle, ..dude_param },
                 )?;
 
-                //limbs
-                let pull = (difnorm * 4.0).powf(0.35);
-                graphics::draw(
-                    ctx,
-                    &self.limb,
-                    DrawParam {
-                        dest: self.dude.into(),
-                        color: RED,
-                        scale: [LIMB_DEPTH + pull, LIMB_WIDTH - pull].into(),
-                        rotation: dif_rotation_angle,
-                        ..Default::default()
-                    },
-                )?;
-                graphics::draw(
-                    ctx,
-                    &self.limb,
-                    DrawParam {
-                        dest: self.dude.into(),
-                        color: RED,
-                        scale: [LIMB_DEPTH + pull, -LIMB_WIDTH + pull].into(),
-                        rotation: dif_rotation_angle,
-                        ..Default::default()
-                    },
-                )?;
-                // notched arrow
-                // TODO below this line
-                let notch_shift = dif.coords * (pull * 2.5 + LIMB_DEPTH) / difnorm;
-                let notch_at = self.dude + notch_shift;
+                // nocked at
+                let nock_at = self.dude + Pt2::new(0., -3.).coords;
                 let p = DrawParam {
-                    dest: notch_at.into(),
+                    dest: nock_at.into(),
                     color: WHITE,
-                    scale: [40. / 230.; 2].into(),
-                    rotation: dif_rotation_angle_neg,
+                    scale: [40. / 32.; 2].into(),
+                    offset: [0., 0.5].into(),
+                    rotation: draw_angle,
                     ..Default::default()
                 };
-                self.arrow_batch.add(p);
+                self.assets.tex.arrow_batch.add(p);
+                // graphics::draw(
+                //     ctx,
+                //     &self.assets.tex.unit_line,
+                //     DrawParam {
+                //         dest: start.into(),
+                //         color: WHITE,
+                //         scale: [difnorm, 1.0].into(),
+                //         rotation: dif_rotation_angle,
+                //         ..Default::default()
+                //     },
+                // )?;
 
-                let p1 = Pt2::new(-LIMB_DEPTH - pull, -LIMB_WIDTH + pull);
-                let theta = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &p1.coords);
-                let pt_thetad = dif_rotation * (theta * p1);
-                graphics::draw(
-                    ctx,
-                    &self.unit_line,
-                    DrawParam {
-                        dest: (self.dude + pt_thetad.coords).into(),
-                        color: WHITE,
-                        scale: [1.0, 1.0].into(),
-                        rotation: 0.0,
-                        ..Default::default()
-                    },
-                )?;
+                // graphics::draw(
+                //     ctx,
+                //     &self.assets.tex.unit_line,
+                //     DrawParam {
+                //         dest: self.dude.into(),
+                //         color: RED,
+                //         scale: [difnorm * 4.0, 1.0].into(),
+                //         rotation: dif_rotation_angle_neg,
+                //         ..Default::default()
+                //     },
+                // )?;
+
+                // //limbs
+                // let pull = tautness.level() as f32 * 5.0;
+                // // let pull = (difnorm * 4.0).powf(0.35);
+                // graphics::draw(
+                //     ctx,
+                //     &self.assets.tex.limb,
+                //     DrawParam {
+                //         dest: self.dude.into(),
+                //         color: RED,
+                //         scale: [LIMB_DEPTH + pull, LIMB_WIDTH - pull].into(),
+                //         rotation: dif_rotation_angle,
+                //         ..Default::default()
+                //     },
+                // )?;
+                // graphics::draw(
+                //     ctx,
+                //     &self.assets.tex.limb,
+                //     DrawParam {
+                //         dest: self.dude.into(),
+                //         color: RED,
+                //         scale: [LIMB_DEPTH + pull, -LIMB_WIDTH + pull].into(),
+                //         rotation: dif_rotation_angle,
+                //         ..Default::default()
+                //     },
+                // )?;
+                // notched arrow
+                // TODO below this line
+                // let notch_shift = dif.coords * (pull * 2.5 + LIMB_DEPTH) / difnorm;
+                // let nock_at = self.dude + notch_shift;
+                // let p = DrawParam {
+                //     dest: nock_at.into(),
+                //     color: WHITE,
+                //     scale: [40. / 230.; 2].into(),
+                //     rotation: dif_rotation_angle_neg,
+                //     ..Default::default()
+                // };
+                // self.assets.tex.arrow_batch.add(p);
+
+                // let p1 = Pt2::new(-LIMB_DEPTH - pull, -LIMB_WIDTH + pull);
+                // let theta = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &p1.coords);
+                // let pt_thetad = dif_rotation * (theta * p1);
+                // graphics::draw(
+                //     ctx,
+                //     &self.assets.tex.unit_line,
+                //     DrawParam {
+                //         dest: (self.dude + pt_thetad.coords).into(),
+                //         color: WHITE,
+                //         scale: [1.0, 1.0].into(),
+                //         rotation: 0.0,
+                //         ..Default::default()
+                //     },
+                // )?;
                 //strings
             }
+            None => {
+                let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
+                graphics::draw(ctx, &self.assets.tex.archer_back, DrawParam { src, ..dude_param })?;
+                graphics::draw(ctx, &self.assets.tex.archer, dude_param)?;
+                graphics::draw(
+                    ctx,
+                    &self.assets.tex.archer_front,
+                    DrawParam { src, ..dude_param },
+                )?;
+            }
         }
-        graphics::draw(ctx, &self.arrow_batch, DrawParam::default())?;
-        self.arrow_batch.clear();
+        graphics::draw(ctx, &self.assets.tex.arrow_batch, DrawParam::default())?;
+        self.assets.tex.arrow_batch.clear();
         graphics::present(ctx)
     }
 }
