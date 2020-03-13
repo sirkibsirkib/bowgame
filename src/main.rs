@@ -19,6 +19,8 @@ struct Pressing {
     down: Option<bool>,
 }
 
+const ROOT_OF_2: f32 = 1.41421356;
+
 mod assets;
 use assets::*;
 mod helper;
@@ -36,6 +38,11 @@ fn main() {
         Err(e) => println!("Error occured: {}", e),
     }
 }
+#[inline]
+fn ortho(n: Pt3) -> Pt2 {
+    [n[0], n[1] / ROOT_OF_2 + n[2] / ROOT_OF_2].into()
+}
+
 type Pt2 = na::Point2<f32>;
 type Pt3 = na::Point3<f32>;
 
@@ -62,7 +69,7 @@ struct AudioAssets {
 struct MyGame {
     ticks: usize,
     pressing: Pressing,
-    dude: Pt2,
+    dude: Pt3,
     time: f32,
     arrows: Vec<Arrow>,
     stuck_arrows: Vec<StuckArrow>,
@@ -82,16 +89,29 @@ struct Arrow {
     vel: Pt3,
 }
 struct StuckArrow {
-    pos: Pt2,
-    rot_xy: f32,
-    vibration_amplitude: f32,
+    pos: Pt3,
+    vel: Pt3,
+    // vibration_amplitude: f32,
 }
 impl Arrow {
-    fn rot_xy(&self) -> f32 {
-        Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &self.vel.xy().coords).angle()
+    fn rot_of_xy(p: Pt2) -> f32 {
+        Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &p.coords).angle()
     }
     fn stick(self) -> StuckArrow {
-        StuckArrow { pos: self.pos.xy(), rot_xy: self.rot_xy(), vibration_amplitude: 0.5 }
+        let Self { mut pos, vel } = self;
+        pos[2] = 0.;
+        StuckArrow { pos, vel }
+    }
+    fn vel_to_rot_len(mut vel_xyz: Pt3) -> [f32; 2] {
+        vel_xyz.coords = vel_xyz.coords.normalize();
+        let xy = ortho(vel_xyz);
+        [Self::rot_of_xy(xy), xy.coords.norm()]
+    }
+    fn vel_to_rot_len_shadow(mut vel_xyz: Pt3) -> [f32; 2] {
+        vel_xyz.coords = vel_xyz.coords.normalize();
+        vel_xyz[2] = 0.;
+        let xy = ortho(vel_xyz);
+        [Self::rot_of_xy(xy), xy.coords.norm()]
     }
 }
 
@@ -152,7 +172,7 @@ impl EventHandler for MyGame {
         let mut draining = Draining::new(&mut self.arrows);
         let mut speed = WALK_SPEED;
         if self.pressing.down.is_some() && self.pressing.right.is_some() {
-            speed /= 1.42
+            speed /= ROOT_OF_2
         };
         match (self.pressing.right, &self.nocked) {
             (Some(walk_right), Some(Nocked { aim_right, .. })) => {
@@ -174,16 +194,13 @@ impl EventHandler for MyGame {
             let arrow: &mut Arrow = entry.get_mut();
             let nsq = arrow.vel.coords.norm_squared().sqr() + 1.;
             arrow.vel += Pt3::new(0., 0., 0.3).coords;
-            arrow.vel *= nsq.powf(0.994) / nsq;
+            arrow.vel *= nsq.powf(0.995) / nsq;
             arrow.pos += arrow.vel.coords;
             if arrow.pos[2] >= 0. {
                 let index = unsafe { std::mem::transmute::<_, f32>(self.time) } as usize % 3;
                 self.assets.audio.twang[index].play().unwrap();
                 self.stuck_arrows.push(entry.take().stick())
             }
-        }
-        for stuck_arrow in &mut self.stuck_arrows {
-            stuck_arrow.vibration_amplitude *= 0.93
         }
         self.ticks = self.ticks.wrapping_add(1);
         Ok(())
@@ -201,13 +218,11 @@ impl EventHandler for MyGame {
             if let Some(Nocked { start, tautness, .. }) = self.nocked.take() {
                 if tautness != Tautness::None {
                     let second: Pt2 = [x, y].into();
-                    let vel_xy = (start - second.coords) * 0.08;
+                    let diff = (start - second.coords) * 0.08;
+                    let vel = [diff[0], diff[1] / ROOT_OF_2, -9.].into();
                     self.assets.audio.loose[0].play().unwrap();
                     self.assets.audio.taut[tautness as usize].stop();
-                    self.arrows.push(Arrow {
-                        pos: pt2_to_pt3(self.dude, 2.0),
-                        vel: pt2_to_pt3(vel_xy, -15.0),
-                    });
+                    self.arrows.push(Arrow { pos: self.dude + Pt3::new(0., 0., 2.).coords, vel });
                 }
             }
         } else {
@@ -237,55 +252,70 @@ impl EventHandler for MyGame {
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         graphics::clear(ctx, GREEN);
         // the dude
-        const DUDE_SCALE: [f32; 2] = [2.0f32; 2];
+        const DUDE_SCALE: [f32; 2] = [2.; 2];
+        const ARROW_SCALE: f32 = 1.6;
+        let right_facing =
+            self.nocked.as_ref().map(|x| x.aim_right).or(self.pressing.right).unwrap_or(true);
         let facing_dude_scale = [
-            DUDE_SCALE[0]
-                * if self
-                    .nocked
-                    .as_ref()
-                    .map(|x| x.aim_right)
-                    .or(self.pressing.right)
-                    .unwrap_or(false)
-                {
-                    1.
-                } else {
-                    -1.
-                },
+            //
+            DUDE_SCALE[0] * if right_facing { 1. } else { -1. },
             DUDE_SCALE[1],
         ];
         let dude_param = DrawParam {
             src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
-            dest: self.dude.into(),
+            dest: ortho(self.dude).into(),
             color: WHITE,
             scale: facing_dude_scale.into(),
             offset: [0.5, 0.5].into(),
             ..Default::default()
         };
+        fn flatten(p: Pt3) -> Pt3 {
+            [p[0], p[1], 0.].into()
+        }
         for arrow in &self.arrows {
+            // shadow
+            let dest = ortho(flatten(arrow.pos));
+            let [rotation, len] = Arrow::vel_to_rot_len_shadow(flatten(arrow.vel));
             let p = DrawParam {
-                dest: [arrow.pos[0], arrow.pos[1] + arrow.pos[2]].into(),
-                color: WHITE,
-                scale: DUDE_SCALE.into(),
-                rotation: arrow.rot_xy(),
+                dest: dest.into(),
+                scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
+                rotation,
+                color: BLACK,
+                offset: [0.95, 0.5].into(),
+                ..Default::default()
+            };
+            //real
+            self.assets.tex.arrow_batch.add(p);
+            let dest = ortho(arrow.pos);
+            let [rotation, len] = Arrow::vel_to_rot_len(arrow.vel);
+            let p = DrawParam {
+                dest: dest.into(),
+                scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
+                rotation,
                 offset: [0.95, 0.5].into(),
                 ..Default::default()
             };
             self.assets.tex.arrow_batch.add(p);
-            self.assets.tex.arrow_batch.add(DrawParam {
-                dest: arrow.pos.xy().into(),
-                color: BLACK,
-                ..p
-            });
-            // graphics::draw(ctx, &self.arrowhead, p)?;
         }
-        for stuck_arrow in &mut self.stuck_arrows {
-            let dest = stuck_arrow.pos.into();
-            let rotation =
-                stuck_arrow.rot_xy + (self.time * 3.0).sin() * stuck_arrow.vibration_amplitude;
+        for arrow in &mut self.stuck_arrows {
+            // shadow
+            let dest = ortho(flatten(arrow.pos));
+            let [rotation, len] = Arrow::vel_to_rot_len_shadow(flatten(arrow.vel));
             let p = DrawParam {
-                dest,
-                color: WHITE,
-                scale: DUDE_SCALE.into(),
+                dest: dest.into(),
+                scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
+                rotation,
+                color: BLACK,
+                offset: [0.95, 0.5].into(),
+                ..Default::default()
+            };
+            //real
+            self.assets.tex.arrow_batch.add(p);
+            let dest = ortho(arrow.pos);
+            let [rotation, len] = Arrow::vel_to_rot_len(arrow.vel);
+            let p = DrawParam {
+                dest: dest.into(),
+                scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
                 rotation,
                 offset: [0.95, 0.5].into(),
                 ..Default::default()
@@ -317,18 +347,20 @@ impl EventHandler for MyGame {
                 let dif_rotation_angle = dif_rotation.angle();
                 // let dif_rotation_angle_neg = dif_rotation_angle + core::f32::consts::PI;
 
-                let draw_angle = if tautness.level() >= 2 {
+                let aim_angle = if tautness.level() >= 2 {
                     dif_rotation_angle + core::f32::consts::PI
                 } else {
                     0.
                 };
+                let arm_angle =
+                    if right_facing { aim_angle } else { aim_angle + core::f32::consts::PI };
 
                 // draw the dude
                 let arm_src = Rect { x: 0.2 * tautness.level() as f32, y: 0., h: 0.2, w: 0.2 };
                 graphics::draw(
                     ctx,
                     &self.assets.tex.archer_back,
-                    DrawParam { src: arm_src, rotation: draw_angle, ..dude_param },
+                    DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
                 )?;
                 graphics::draw(
                     ctx,
@@ -338,27 +370,27 @@ impl EventHandler for MyGame {
                 graphics::draw(
                     ctx,
                     &self.assets.tex.archer_front,
-                    DrawParam { src: arm_src, rotation: draw_angle, ..dude_param },
+                    DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
                 )?;
 
                 // nocked arrow
-                let nock_at = self.dude + Pt2::new(0., -3.).coords;
+                let nock_at = self.dude + Pt3::new(0., 0., -3.).coords;
                 let p = DrawParam {
-                    dest: nock_at.into(),
+                    dest: ortho(nock_at).into(),
                     color: WHITE,
-                    scale: [2.; 2].into(),
+                    scale: [ARROW_SCALE; 2].into(),
                     offset: [0., 0.5].into(),
-                    rotation: draw_angle,
+                    rotation: aim_angle,
                     ..Default::default()
                 };
                 self.assets.tex.arrow_batch.add(p);
 
                 // white line
-                graphics::draw(
-                    ctx,
-                    &self.assets.tex.unit_line,
-                    DrawParam { src: arm_src, rotation: draw_angle, ..dude_param },
-                )?;
+                // graphics::draw(
+                //     ctx,
+                //     &self.assets.tex.unit_line,
+                //     DrawParam { src: arm_src, rotation: draw_angle, ..dude_param },
+                // )?;
             }
             _ => {
                 let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };

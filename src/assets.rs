@@ -118,7 +118,7 @@ impl MyGame {
         MyGame {
             ticks: 0,
             pressing: Pressing::default(),
-            dude: [200., 290.].into(),
+            dude: [200., 290., 0.].into(),
             time: 0.,
             arrows: vec![],
             stuck_arrows: vec![],
