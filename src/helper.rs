@@ -1,4 +1,3 @@
-use super::*;
 // invariant: self.0.next_index - 1 is within bounds of self.0.v
 pub struct Entry<'vec, 'entry, T> {
     draining: &'entry mut Draining<'vec, T>,

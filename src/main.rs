@@ -60,6 +60,7 @@ struct AudioAssets {
 }
 
 struct MyGame {
+    ticks: usize,
     pressing: Pressing,
     dude: Pt2,
     time: f32,
@@ -70,6 +71,7 @@ struct MyGame {
 }
 struct Nocked {
     start: Pt2,
+    aim_right: bool,
     tautness: Tautness,
 }
 fn pt2_to_pt3(xy: Pt2, z: f32) -> Pt3 {
@@ -148,28 +150,26 @@ impl EventHandler for MyGame {
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
         self.time += 1.0;
         let mut draining = Draining::new(&mut self.arrows);
-        match self.pressing.right {
-            Some(true) => {
-                self.dude[0] +=
-                    if self.pressing.down.is_none() { WALK_SPEED } else { WALK_SPEED / 1.42 }
-            }
-            Some(false) => {
-                self.dude[0] -=
-                    if self.pressing.down.is_none() { WALK_SPEED } else { WALK_SPEED / 1.42 }
-            }
-            _ => {}
-        }
-        match self.pressing.down {
-            Some(true) => {
-                self.dude[1] +=
-                    if self.pressing.right.is_none() { WALK_SPEED } else { WALK_SPEED / 1.42 }
-            }
-            Some(false) => {
-                self.dude[1] -=
-                    if self.pressing.right.is_none() { WALK_SPEED } else { WALK_SPEED / 1.42 }
+        let mut speed = WALK_SPEED;
+        if self.pressing.down.is_some() && self.pressing.right.is_some() {
+            speed /= 1.42
+        };
+        match (self.pressing.right, &self.nocked) {
+            (Some(walk_right), Some(Nocked { aim_right, .. })) => {
+                speed *= if walk_right == *aim_right { 0.666 } else { 0.333 };
             }
             _ => {}
         }
+        self.dude[0] += match self.pressing.right {
+            Some(true) => speed,
+            Some(false) => -speed,
+            _ => 0.,
+        };
+        self.dude[1] += match self.pressing.down {
+            Some(true) => speed,
+            Some(false) => -speed,
+            _ => 0.,
+        };
         while let Some(mut entry) = draining.next() {
             let arrow: &mut Arrow = entry.get_mut();
             let nsq = arrow.vel.coords.norm_squared().sqr() + 1.;
@@ -185,19 +185,20 @@ impl EventHandler for MyGame {
         for stuck_arrow in &mut self.stuck_arrows {
             stuck_arrow.vibration_amplitude *= 0.93
         }
+        self.ticks = self.ticks.wrapping_add(1);
         Ok(())
     }
 
     fn mouse_button_down_event(&mut self, _ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
         if let MouseButton::Left = button {
             let start = [x, y].into();
-            self.nocked = Some(Nocked { start, tautness: Tautness::None });
+            self.nocked = Some(Nocked { start, aim_right: true, tautness: Tautness::None });
         }
     }
 
     fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
         if let MouseButton::Left = button {
-            if let Some(Nocked { start, tautness }) = self.nocked.take() {
+            if let Some(Nocked { start, tautness, .. }) = self.nocked.take() {
                 if tautness != Tautness::None {
                     let second: Pt2 = [x, y].into();
                     let vel_xy = (start - second.coords) * 0.08;
@@ -215,9 +216,10 @@ impl EventHandler for MyGame {
     }
 
     fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32, _dx: f32, _dy: f32) {
-        if let Some(Nocked { start, tautness }) = &mut self.nocked {
+        if let Some(Nocked { start, tautness, aim_right }) = &mut self.nocked {
             let at: Pt2 = [x, y].into();
             let diff = at - start.coords;
+            *aim_right = diff[0] < 0.;
             let new_tautness = match diff.coords.norm_squared() {
                 x if x < 50.0f32.sqr() => Tautness::None,
                 x if x < 100.0f32.sqr() => Tautness::Low,
@@ -235,11 +237,27 @@ impl EventHandler for MyGame {
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         graphics::clear(ctx, GREEN);
         // the dude
+        const DUDE_SCALE: [f32; 2] = [2.0f32; 2];
+        let facing_dude_scale = [
+            DUDE_SCALE[0]
+                * if self
+                    .nocked
+                    .as_ref()
+                    .map(|x| x.aim_right)
+                    .or(self.pressing.right)
+                    .unwrap_or(false)
+                {
+                    1.
+                } else {
+                    -1.
+                },
+            DUDE_SCALE[1],
+        ];
         let dude_param = DrawParam {
             src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
             dest: self.dude.into(),
             color: WHITE,
-            scale: [2.0; 2].into(),
+            scale: facing_dude_scale.into(),
             offset: [0.5, 0.5].into(),
             ..Default::default()
         };
@@ -247,7 +265,7 @@ impl EventHandler for MyGame {
             let p = DrawParam {
                 dest: [arrow.pos[0], arrow.pos[1] + arrow.pos[2]].into(),
                 color: WHITE,
-                scale: [40. / 32.; 2].into(),
+                scale: DUDE_SCALE.into(),
                 rotation: arrow.rot_xy(),
                 offset: [0.95, 0.5].into(),
                 ..Default::default()
@@ -267,28 +285,33 @@ impl EventHandler for MyGame {
             let p = DrawParam {
                 dest,
                 color: WHITE,
-                scale: [40. / 32.; 2].into(),
+                scale: DUDE_SCALE.into(),
                 rotation,
                 offset: [0.95, 0.5].into(),
                 ..Default::default()
             };
-            // graphics::draw(ctx, &self.arrowshaft, p)?;
-
             self.assets.tex.arrow_batch.add(p);
         }
-        // let x = match self.nocked.as_ref().map(|x| x.tautness) {
-        //     None => 0.0,
-        //     Some(Tautness::None) => 0.2,
-        //     Some(Tautness::Low) => 0.4,
-        //     Some(Tautness::Med) => 0.6,
-        //     Some(Tautness::High) => 0.6,
-        // };
-        // let src = Rect { x, y: 0., h: 0.2, w: 0.2 };
+        let main_src = {
+            let x = if self.pressing.down.is_some() || self.pressing.right.is_some() {
+                const FRAME_TICKS: usize = 10;
+                match self.ticks % (FRAME_TICKS * 6) {
+                    x if x < FRAME_TICKS * 1 => 0.0,
+                    x if x < FRAME_TICKS * 2 => 0.2,
+                    x if x < FRAME_TICKS * 3 => 0.4,
+                    x if x < FRAME_TICKS * 4 => 0.6,
+                    x if x < FRAME_TICKS * 5 => 0.4,
+                    ________________________ => 0.2,
+                }
+            } else {
+                0.4
+            };
+            Rect { x, y: 0., h: 0.2, w: 0.2 }
+        };
         let end: Pt2 = ggez::input::mouse::position(ctx).into();
         match self.nocked {
-            Some(Nocked { start, tautness }) if start != end => {
+            Some(Nocked { start, tautness, .. }) if start != end => {
                 let dif = end - start.coords;
-                let difnorm = dif.coords.norm();
                 let dif_rotation =
                     Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &dif.coords);
                 let dif_rotation_angle = dif_rotation.angle();
@@ -300,112 +323,51 @@ impl EventHandler for MyGame {
                     0.
                 };
 
-                let src = Rect { x: 0.2 * tautness.level() as f32, y: 0., h: 0.2, w: 0.2 };
+                // draw the dude
+                let arm_src = Rect { x: 0.2 * tautness.level() as f32, y: 0., h: 0.2, w: 0.2 };
                 graphics::draw(
                     ctx,
                     &self.assets.tex.archer_back,
-                    DrawParam { src, rotation: draw_angle, ..dude_param },
+                    DrawParam { src: arm_src, rotation: draw_angle, ..dude_param },
                 )?;
-                graphics::draw(ctx, &self.assets.tex.archer, dude_param)?;
+                graphics::draw(
+                    ctx,
+                    &self.assets.tex.archer,
+                    DrawParam { src: main_src, scale: facing_dude_scale.into(), ..dude_param },
+                )?;
                 graphics::draw(
                     ctx,
                     &self.assets.tex.archer_front,
-                    DrawParam { src, rotation: draw_angle, ..dude_param },
+                    DrawParam { src: arm_src, rotation: draw_angle, ..dude_param },
                 )?;
 
-                // nocked at
+                // nocked arrow
                 let nock_at = self.dude + Pt2::new(0., -3.).coords;
                 let p = DrawParam {
                     dest: nock_at.into(),
                     color: WHITE,
-                    scale: [40. / 32.; 2].into(),
+                    scale: [2.; 2].into(),
                     offset: [0., 0.5].into(),
                     rotation: draw_angle,
                     ..Default::default()
                 };
                 self.assets.tex.arrow_batch.add(p);
-                // graphics::draw(
-                //     ctx,
-                //     &self.assets.tex.unit_line,
-                //     DrawParam {
-                //         dest: start.into(),
-                //         color: WHITE,
-                //         scale: [difnorm, 1.0].into(),
-                //         rotation: dif_rotation_angle,
-                //         ..Default::default()
-                //     },
-                // )?;
 
-                // graphics::draw(
-                //     ctx,
-                //     &self.assets.tex.unit_line,
-                //     DrawParam {
-                //         dest: self.dude.into(),
-                //         color: RED,
-                //         scale: [difnorm * 4.0, 1.0].into(),
-                //         rotation: dif_rotation_angle_neg,
-                //         ..Default::default()
-                //     },
-                // )?;
-
-                // //limbs
-                // let pull = tautness.level() as f32 * 5.0;
-                // // let pull = (difnorm * 4.0).powf(0.35);
-                // graphics::draw(
-                //     ctx,
-                //     &self.assets.tex.limb,
-                //     DrawParam {
-                //         dest: self.dude.into(),
-                //         color: RED,
-                //         scale: [LIMB_DEPTH + pull, LIMB_WIDTH - pull].into(),
-                //         rotation: dif_rotation_angle,
-                //         ..Default::default()
-                //     },
-                // )?;
-                // graphics::draw(
-                //     ctx,
-                //     &self.assets.tex.limb,
-                //     DrawParam {
-                //         dest: self.dude.into(),
-                //         color: RED,
-                //         scale: [LIMB_DEPTH + pull, -LIMB_WIDTH + pull].into(),
-                //         rotation: dif_rotation_angle,
-                //         ..Default::default()
-                //     },
-                // )?;
-                // notched arrow
-                // TODO below this line
-                // let notch_shift = dif.coords * (pull * 2.5 + LIMB_DEPTH) / difnorm;
-                // let nock_at = self.dude + notch_shift;
-                // let p = DrawParam {
-                //     dest: nock_at.into(),
-                //     color: WHITE,
-                //     scale: [40. / 230.; 2].into(),
-                //     rotation: dif_rotation_angle_neg,
-                //     ..Default::default()
-                // };
-                // self.assets.tex.arrow_batch.add(p);
-
-                // let p1 = Pt2::new(-LIMB_DEPTH - pull, -LIMB_WIDTH + pull);
-                // let theta = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &p1.coords);
-                // let pt_thetad = dif_rotation * (theta * p1);
-                // graphics::draw(
-                //     ctx,
-                //     &self.assets.tex.unit_line,
-                //     DrawParam {
-                //         dest: (self.dude + pt_thetad.coords).into(),
-                //         color: WHITE,
-                //         scale: [1.0, 1.0].into(),
-                //         rotation: 0.0,
-                //         ..Default::default()
-                //     },
-                // )?;
-                //strings
+                // white line
+                graphics::draw(
+                    ctx,
+                    &self.assets.tex.unit_line,
+                    DrawParam { src: arm_src, rotation: draw_angle, ..dude_param },
+                )?;
             }
-            None => {
+            _ => {
                 let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
                 graphics::draw(ctx, &self.assets.tex.archer_back, DrawParam { src, ..dude_param })?;
-                graphics::draw(ctx, &self.assets.tex.archer, dude_param)?;
+                graphics::draw(
+                    ctx,
+                    &self.assets.tex.archer,
+                    DrawParam { src: main_src, ..dude_param },
+                )?;
                 graphics::draw(
                     ctx,
                     &self.assets.tex.archer_front,

@@ -116,6 +116,7 @@ impl Assets {
 impl MyGame {
     pub fn new(ctx: &mut Context) -> Self {
         MyGame {
+            ticks: 0,
             pressing: Pressing::default(),
             dude: [200., 290.].into(),
             time: 0.,
