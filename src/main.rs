@@ -16,6 +16,7 @@ struct Pressing {
     down: Option<bool>,
 }
 
+const MAX_PULL: f32 = 250.;
 const ROOT_OF_2: f32 = 1.41421356;
 
 mod assets;
@@ -307,7 +308,7 @@ impl EventHandler for MyGame {
                         let diff = (start - second.coords) * 0.08;
                         let z = moved_ticks as f32 * -0.15;
                         let mut vel: Pt3 = [diff[0], diff[1] * ROOT_OF_2, 0.].into();
-                        let nqs1 = vel.coords.norm_squared();
+                        let nqs1 = vel.coords.norm_squared().min(MAX_PULL.sqr());
                         vel[2] = z;
                         let nqs2 = vel.coords.norm_squared();
                         vel *= nqs1 / nqs2;
@@ -323,14 +324,14 @@ impl EventHandler for MyGame {
         }
     }
 
-    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32, dx: f32, dy: f32) {
+    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32, _dx: f32, _dy: f32) {
         let mouse_at: Pt2 = [x, y].into();
         if self.last_mouse_at == mouse_at {
             return;
         }
         self.last_mouse_at = mouse_at;
         if let Some(Nocked { start, tautness, aim_right, moved_ticks }) = &mut self.nocked {
-            println!("{:?}", [dx, dy]);
+            // println!("{:?}", [dx, dy]);
             *moved_ticks += 1;
             let diff = mouse_at - start.coords;
             *aim_right = diff[0] < 0.;
@@ -485,6 +486,21 @@ impl EventHandler for MyGame {
                     ..Default::default()
                 };
                 self.assets.tex.arrow_batch.add(p);
+
+                let color = if tautness.level() >= 2 { WHITE } else { RED };
+                let linelen = (start - end.coords).coords.norm().min(MAX_PULL);
+                graphics::draw(
+                    ctx,
+                    &self.assets.tex.unit_line,
+                    DrawParam {
+                        color,
+                        src: arm_src,
+                        dest: start.into(),
+                        rotation: dif_rotation_angle,
+                        scale: [linelen, 1.].into(),
+                        ..Default::default()
+                    },
+                )?;
             }
             _ => {
                 let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
