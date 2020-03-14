@@ -40,7 +40,7 @@ impl Assets {
                 .unwrap()
                 .build(ctx)
                 .unwrap(),
-            arrow_batch: SpriteBatch::new(Image::new(ctx, "/arrow2.png").unwrap()),
+            arrow_batch: SpriteBatch::new(Image::new(ctx, "/arrow.png").unwrap()),
             limb: MeshBuilder::new()
                 .polygon(
                     DrawMode::fill(),
@@ -81,27 +81,5 @@ impl Assets {
             ],
         };
         Assets { audio, tex }
-    }
-}
-
-impl MyGame {
-    pub fn new(ctx: &mut Context) -> Self {
-        MyGame {
-            ticks: 0,
-            pressing: Pressing::default(),
-            dude: [200., 290., 0.].into(),
-            time: 0.,
-            arrows: vec![],
-            stuck_arrows: vec![],
-            nocked: None,
-            assets: Assets::new(ctx),
-            doodads: vec![
-                //
-                Doodad { kind: DoodadKind::Rock, pos: Pt3::new(0., 0., 0.) },
-                Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(100., 240., 0.) },
-                Doodad { kind: DoodadKind::Pebbles, pos: Pt3::new(260., 240., 0.) },
-                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(200., 290., 0.) },
-            ],
-        }
     }
 }
