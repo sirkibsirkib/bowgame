@@ -98,7 +98,9 @@ impl MyGame {
             doodads: vec![
                 //
                 Doodad { kind: DoodadKind::Rock, pos: Pt3::new(0., 0., 0.) },
-                Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(200., 240., 0.) },
+                Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(100., 240., 0.) },
+                Doodad { kind: DoodadKind::Pebbles, pos: Pt3::new(260., 240., 0.) },
+                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(200., 290., 0.) },
             ],
         }
     }

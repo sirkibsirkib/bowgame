@@ -78,7 +78,7 @@ impl DoodadKind {
             Self::Bush => 0.0,
             Self::Rock => 0.2,
             Self::Pebbles => 0.4,
-            Self::Shrub => 0.2,
+            Self::Shrub => 0.6,
         };
         Rect { x, y: 0., w: 0.2, h: 0.2 }
     }
@@ -260,8 +260,8 @@ impl EventHandler for MyGame {
                 *tautness = new_tautness;
             }
         }
-        const CENTER_AT: f32 = 400.;
-        let diff = CENTER_AT - x;
+        const CENTER_AT: f32 = 300.;
+        let diff = CENTER_AT - y;
         if diff.abs() > 1. {
             let axisangle = na::Vector3::z() * (0.001 * diff);
             let rot = Rotation3::new(axisangle);
@@ -274,7 +274,7 @@ impl EventHandler for MyGame {
             for d in self.doodads.iter_mut() {
                 d.pos = pos_recalc(d.pos);
             }
-            ggez::input::mouse::set_position(ctx, [CENTER_AT, y]).unwrap();
+            ggez::input::mouse::set_position(ctx, [x, CENTER_AT]).unwrap();
         }
     }
 
