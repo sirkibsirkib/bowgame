@@ -31,7 +31,6 @@ fn main() {
         .expect("aieee, could not create ggez context!");
 
     ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
-    // ggez::input::mouse::set_cursor_hidden(&mut ctx, true);
     let mut my_game = MyGame::new(&mut ctx);
     match event::run(&mut ctx, &mut event_loop, &mut my_game) {
         Ok(_) => println!("Exited cleanly."),
@@ -60,7 +59,7 @@ struct TexAssets {
     archer_front: Image,
 }
 struct AudioAssets {
-    taut: [Source; 4],
+    taut: [Source; 5],
     loose: [Source; 1],
     twang: [Source; 3],
 }
@@ -101,10 +100,10 @@ impl MyGame {
             assets: Assets::new(ctx),
             doodads: vec![
                 //
-                Doodad { kind: DoodadKind::Rock, pos: Pt3::new(150., 190., 0.) },
-                Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(100., 240., 0.) },
-                Doodad { kind: DoodadKind::Pebbles, pos: Pt3::new(260., 240., 0.) },
-                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(200., 250., 0.) },
+                Doodad { kind: DoodadKind::Rock, pos: Pt3::new(100., 100., 0.) },
+                Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(400., 250., 0.) },
+                Doodad { kind: DoodadKind::Pebbles, pos: Pt3::new(260., 320., 0.) },
+                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(170., 490., 0.) },
             ],
         }
     }
@@ -128,7 +127,6 @@ struct MyGame {
 }
 struct Nocked {
     start: Pt2,
-    moved_ticks: usize,
     aim_right: bool,
     tautness: Tautness,
 }
@@ -162,6 +160,7 @@ enum Tautness {
     Low,
     Med,
     High,
+    Max,
 }
 impl Tautness {
     fn level(self) -> usize {
@@ -170,6 +169,7 @@ impl Tautness {
             Tautness::Low => 1,
             Tautness::Med => 2,
             Tautness::High => 3,
+            Tautness::Max => 4,
         }
     }
 }
@@ -259,10 +259,20 @@ impl EventHandler for MyGame {
             arrow.vel += Pt3::new(0., 0., 0.5).coords; // gravity
             arrow.vel *= nsq.powf(0.996) / nsq;
             arrow.pos += arrow.vel.coords;
-            if arrow.pos[2] >= 0. {
+            let mut stuck = arrow.pos[2] >= 0.;
+            for d in self.doodads.iter() {
+                let mut diff = d.pos - arrow.pos.coords;
+                diff[2] *= 0.5;
+                if diff.coords.norm_squared() < 400. {
+                    println!("STICK");
+                    stuck = true;
+                    break;
+                }
+            }
+            if stuck {
                 let index = self.ticks % 3;
                 self.assets.audio.twang[index].play().unwrap();
-                arrow.pos[2] = 0.;
+                arrow.pos[2] = arrow.pos[2].min(0.);
                 self.stuck_arrows.push(entry.take())
             }
         }
@@ -282,12 +292,7 @@ impl EventHandler for MyGame {
         match button {
             MouseButton::Left => {
                 let start = [x, y].into();
-                self.nocked = Some(Nocked {
-                    start,
-                    moved_ticks: 0,
-                    aim_right: true,
-                    tautness: Tautness::None,
-                });
+                self.nocked = Some(Nocked { start, aim_right: true, tautness: Tautness::None });
             }
             MouseButton::Right => {
                 let anchor_pt: Pt2 = [x, y].into();
@@ -302,16 +307,15 @@ impl EventHandler for MyGame {
     fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
         match button {
             MouseButton::Left => {
-                if let Some(Nocked { start, tautness, moved_ticks, .. }) = self.nocked.take() {
+                if let Some(Nocked { start, tautness, .. }) = self.nocked.take() {
                     if tautness != Tautness::None {
                         let second: Pt2 = [x, y].into();
-                        let diff = (start - second.coords) * 0.08;
-                        let z = moved_ticks as f32 * -0.15;
-                        let mut vel: Pt3 = [diff[0], diff[1] * ROOT_OF_2, 0.].into();
-                        let nqs1 = vel.coords.norm_squared().min(MAX_PULL.sqr());
-                        vel[2] = z;
-                        let nqs2 = vel.coords.norm_squared();
-                        vel *= nqs1 / nqs2;
+                        let diff = start - second.coords;
+                        let n = diff.coords.norm();
+                        let diff = diff * n.min(MAX_PULL) / n;
+                        let diff = diff * 0.12;
+                        let z = -(second - ortho(self.dude).coords).coords.norm() * 0.05;
+                        let vel: Pt3 = [diff[0], diff[1] * ROOT_OF_2, z].into();
                         self.assets.audio.loose[0].play().unwrap();
                         self.assets.audio.taut[tautness as usize].stop();
                         self.arrows
@@ -330,16 +334,15 @@ impl EventHandler for MyGame {
             return;
         }
         self.last_mouse_at = mouse_at;
-        if let Some(Nocked { start, tautness, aim_right, moved_ticks }) = &mut self.nocked {
-            // println!("{:?}", [dx, dy]);
-            *moved_ticks += 1;
+        if let Some(Nocked { start, tautness, aim_right }) = &mut self.nocked {
             let diff = mouse_at - start.coords;
             *aim_right = diff[0] < 0.;
             let new_tautness = match diff.coords.norm_squared() {
-                x if x < 50.0f32.sqr() => Tautness::None,
-                x if x < 100.0f32.sqr() => Tautness::Low,
-                x if x < 150.0f32.sqr() => Tautness::Med,
-                _ => Tautness::High,
+                x if x < 30.0f32.sqr() => Tautness::None,
+                x if x < 70.0f32.sqr() => Tautness::Low,
+                x if x < 120.0f32.sqr() => Tautness::Med,
+                x if x < 180.0f32.sqr() => Tautness::High,
+                _ => Tautness::Max,
             };
             if *tautness != new_tautness {
                 self.assets.audio[*tautness].stop();
@@ -489,18 +492,26 @@ impl EventHandler for MyGame {
 
                 let color = if tautness.level() >= 2 { WHITE } else { RED };
                 let linelen = (start - end.coords).coords.norm().min(MAX_PULL);
-                graphics::draw(
-                    ctx,
-                    &self.assets.tex.unit_line,
-                    DrawParam {
-                        color,
-                        src: arm_src,
-                        dest: start.into(),
-                        rotation: dif_rotation_angle,
-                        scale: [linelen, 1.].into(),
-                        ..Default::default()
-                    },
-                )?;
+                for (dest, rotation) in [
+                    //
+                    (start, dif_rotation_angle),
+                    (ortho(self.dude), dif_rotation_angle + PI),
+                ]
+                .iter()
+                .copied()
+                {
+                    graphics::draw(
+                        ctx,
+                        &self.assets.tex.unit_line,
+                        DrawParam {
+                            color,
+                            dest: dest.into(),
+                            rotation,
+                            scale: [linelen, 1.].into(),
+                            ..Default::default()
+                        },
+                    )?;
+                }
             }
             _ => {
                 let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };

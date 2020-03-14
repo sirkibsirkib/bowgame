@@ -69,6 +69,7 @@ impl Assets {
                 ggez::audio::Source::new(ctx, "/taut2.wav").unwrap(),
                 ggez::audio::Source::new(ctx, "/taut3.wav").unwrap(),
                 ggez::audio::Source::new(ctx, "/taut4.wav").unwrap(),
+                ggez::audio::Source::new(ctx, "/taut4.wav").unwrap(),
             ],
             twang: [
                 ggez::audio::Source::new(ctx, "/twang1.wav").unwrap(),
