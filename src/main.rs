@@ -104,6 +104,8 @@ impl MyGame {
                 Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(400., 250., 0.) },
                 Doodad { kind: DoodadKind::Pebbles, pos: Pt3::new(260., 320., 0.) },
                 Doodad { kind: DoodadKind::Bush, pos: Pt3::new(170., 490., 0.) },
+                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(570., 440., 0.) },
+                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(330., 540., 0.) },
             ],
         }
     }
