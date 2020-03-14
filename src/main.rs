@@ -9,7 +9,7 @@ use ggez::{
         self, spritebatch::SpriteBatch, Color, DrawMode, DrawParam, FilterMode, Image, Mesh,
         MeshBuilder, Rect, BLACK, WHITE,
     },
-    nalgebra::{self as na, geometry::Rotation2},
+    nalgebra::{self as na, Rotation2, Rotation3},
     *,
 };
 
@@ -32,6 +32,8 @@ fn main() {
         .build()
         .expect("aieee, could not create ggez context!");
 
+    ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
+    // ggez::input::mouse::set_cursor_hidden(&mut ctx, true);
     let mut my_game = MyGame::new(&mut ctx);
     match event::run(&mut ctx, &mut event_loop, &mut my_game) {
         Ok(_) => println!("Exited cleanly."),
@@ -52,8 +54,7 @@ struct Assets {
 }
 struct TexAssets {
     arrow_batch: SpriteBatch,
-    // arrowhead: Mesh,
-    // arrowshaft: Mesh,
+    doodads: SpriteBatch,
     limb: Mesh,
     unit_line: Mesh,
     archer_back: Image,
@@ -65,6 +66,28 @@ struct AudioAssets {
     loose: [Source; 1],
     twang: [Source; 3],
 }
+enum DoodadKind {
+    Bush,
+    Rock,
+    Pebbles,
+    Shrub,
+}
+impl DoodadKind {
+    fn rect(&self) -> Rect {
+        let x = match self {
+            Self::Bush => 0.0,
+            Self::Rock => 0.2,
+            Self::Pebbles => 0.4,
+            Self::Shrub => 0.2,
+        };
+        Rect { x, y: 0., w: 0.2, h: 0.2 }
+    }
+}
+
+struct Doodad {
+    kind: DoodadKind,
+    pos: Pt3,
+}
 
 struct MyGame {
     ticks: usize,
@@ -72,9 +95,10 @@ struct MyGame {
     dude: Pt3,
     time: f32,
     arrows: Vec<Arrow>,
-    stuck_arrows: Vec<StuckArrow>,
+    stuck_arrows: Vec<Arrow>,
     nocked: Option<Nocked>,
     assets: Assets,
+    doodads: Vec<Doodad>,
 }
 struct Nocked {
     start: Pt2,
@@ -88,19 +112,9 @@ struct Arrow {
     pos: Pt3,
     vel: Pt3,
 }
-struct StuckArrow {
-    pos: Pt3,
-    vel: Pt3,
-    // vibration_amplitude: f32,
-}
 impl Arrow {
     fn rot_of_xy(p: Pt2) -> f32 {
         Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &p.coords).angle()
-    }
-    fn stick(self) -> StuckArrow {
-        let Self { mut pos, vel } = self;
-        pos[2] = 0.;
-        StuckArrow { pos, vel }
     }
     fn vel_to_rot_len(mut vel_xyz: Pt3) -> [f32; 2] {
         vel_xyz.coords = vel_xyz.coords.normalize();
@@ -199,7 +213,8 @@ impl EventHandler for MyGame {
             if arrow.pos[2] >= 0. {
                 let index = unsafe { std::mem::transmute::<_, f32>(self.time) } as usize % 3;
                 self.assets.audio.twang[index].play().unwrap();
-                self.stuck_arrows.push(entry.take().stick())
+                arrow.pos[2] = 0.;
+                self.stuck_arrows.push(entry.take())
             }
         }
         self.ticks = self.ticks.wrapping_add(1);
@@ -225,12 +240,10 @@ impl EventHandler for MyGame {
                     self.arrows.push(Arrow { pos: self.dude + Pt3::new(0., 0., 2.).coords, vel });
                 }
             }
-        } else {
-            self.stuck_arrows.extend(self.arrows.drain(..).map(Arrow::stick));
         }
     }
 
-    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32, _dx: f32, _dy: f32) {
+    fn mouse_motion_event(&mut self, ctx: &mut Context, x: f32, y: f32, _dx: f32, _dy: f32) {
         if let Some(Nocked { start, tautness, aim_right }) = &mut self.nocked {
             let at: Pt2 = [x, y].into();
             let diff = at - start.coords;
@@ -246,6 +259,22 @@ impl EventHandler for MyGame {
                 self.assets.audio[new_tautness].play().unwrap();
                 *tautness = new_tautness;
             }
+        }
+        const CENTER_AT: f32 = 400.;
+        let diff = CENTER_AT - x;
+        if diff.abs() > 1. {
+            let axisangle = na::Vector3::z() * (0.001 * diff);
+            let rot = Rotation3::new(axisangle);
+            let origin = self.dude.coords;
+            let pos_recalc = move |pos| (rot * (pos - origin)) + origin;
+            for a in self.arrows.iter_mut().chain(self.stuck_arrows.iter_mut()) {
+                a.pos = pos_recalc(a.pos);
+                a.vel = rot * a.vel;
+            }
+            for d in self.doodads.iter_mut() {
+                d.pos = pos_recalc(d.pos);
+            }
+            ggez::input::mouse::set_position(ctx, [CENTER_AT, y]).unwrap();
         }
     }
 
@@ -272,32 +301,16 @@ impl EventHandler for MyGame {
         fn flatten(p: Pt3) -> Pt3 {
             [p[0], p[1], 0.].into()
         }
-        for arrow in &self.arrows {
-            // shadow
-            let dest = ortho(flatten(arrow.pos));
-            let [rotation, len] = Arrow::vel_to_rot_len_shadow(arrow.vel);
-            let p = DrawParam {
-                dest: dest.into(),
-                scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
-                rotation,
-                color: BLACK,
-                offset: [0.95, 0.5].into(),
+        for doodad in self.doodads.iter() {
+            self.assets.tex.doodads.add(DrawParam {
+                src: doodad.kind.rect(),
+                dest: ortho(doodad.pos).into(),
+                scale: [1.; 2].into(),
+                offset: [0.5, 0.5].into(),
                 ..Default::default()
-            };
-            //real
-            self.assets.tex.arrow_batch.add(p);
-            let dest = ortho(arrow.pos);
-            let [rotation, len] = Arrow::vel_to_rot_len(arrow.vel);
-            let p = DrawParam {
-                dest: dest.into(),
-                scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
-                rotation,
-                offset: [0.95, 0.5].into(),
-                ..Default::default()
-            };
-            self.assets.tex.arrow_batch.add(p);
+            });
         }
-        for arrow in &mut self.stuck_arrows {
+        for arrow in self.arrows.iter().chain(self.stuck_arrows.iter()) {
             // shadow
             let dest = ortho(flatten(arrow.pos));
             let [rotation, len] = Arrow::vel_to_rot_len_shadow(arrow.vel);
@@ -384,13 +397,6 @@ impl EventHandler for MyGame {
                     ..Default::default()
                 };
                 self.assets.tex.arrow_batch.add(p);
-
-                // white line
-                // graphics::draw(
-                //     ctx,
-                //     &self.assets.tex.unit_line,
-                //     DrawParam { src: arm_src, rotation: draw_angle, ..dude_param },
-                // )?;
             }
             _ => {
                 let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
@@ -408,7 +414,9 @@ impl EventHandler for MyGame {
             }
         }
         graphics::draw(ctx, &self.assets.tex.arrow_batch, DrawParam::default())?;
+        graphics::draw(ctx, &self.assets.tex.doodads, DrawParam::default())?;
         self.assets.tex.arrow_batch.clear();
+        self.assets.tex.doodads.clear();
         graphics::present(ctx)
     }
 }

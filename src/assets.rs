@@ -31,44 +31,15 @@ fn linear(mut image: Image) -> Image {
 impl Assets {
     pub fn new(ctx: &mut Context) -> Self {
         let tex = TexAssets {
+            doodads: SpriteBatch::new(linear(Image::new(ctx, "/doodads.png").unwrap())),
             archer_back: linear(Image::new(ctx, "/archer_back.png").unwrap()),
             archer: linear(Image::new(ctx, "/archer.png").unwrap()),
             archer_front: linear(Image::new(ctx, "/archer_front.png").unwrap()),
-            // arrowhead: MeshBuilder::new()
-            //     .triangles(
-            //         &[[0., -HEAD_THICKNESS], [HEAD_LENGTH, 0.], [0., HEAD_THICKNESS]],
-            //         graphics::WHITE,
-            //     )
-            //     .unwrap()
-            //     .build(ctx)
-            //     .unwrap(),
             unit_line: MeshBuilder::new()
                 .line(&[[0., 0.], [1., 0.]], 1., graphics::WHITE)
                 .unwrap()
                 .build(ctx)
                 .unwrap(),
-            // arrowshaft: {
-            //     let mut q = MeshBuilder::new();
-            //     q.polygon(
-            //         DrawMode::fill(),
-            //         &[
-            //             [-0.9, -FLETCH_THICKNESS],
-            //             [-0.9 + FLETCH_LENGTH, -FLETCH_THICKNESS],
-            //             [-0.9 + FLETCH_LENGTH + FLETCH_INDENT, -0.],
-            //             [-0.9 + FLETCH_LENGTH, FLETCH_THICKNESS],
-            //             [-0.9, FLETCH_THICKNESS],
-            //             [-0.9 + FLETCH_INDENT, 0.],
-            //         ],
-            //         RED,
-            //     )
-            //     .unwrap();
-            //     q.rectangle(
-            //         DrawMode::fill(),
-            //         Rect { w: -0.9, h: SHAFT_THICKNESS * 2., x: 0., y: -SHAFT_THICKNESS },
-            //         BROWN,
-            //     );
-            //     q.build(ctx).unwrap()
-            // },
             arrow_batch: SpriteBatch::new(Image::new(ctx, "/arrow2.png").unwrap()),
             limb: MeshBuilder::new()
                 .polygon(
@@ -124,6 +95,11 @@ impl MyGame {
             stuck_arrows: vec![],
             nocked: None,
             assets: Assets::new(ctx),
+            doodads: vec![
+                //
+                Doodad { kind: DoodadKind::Rock, pos: Pt3::new(0., 0., 0.) },
+                Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(200., 240., 0.) },
+            ],
         }
     }
 }
