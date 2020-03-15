@@ -151,26 +151,23 @@ struct Nocked {
     aim_right: bool,
     tautness: Tautness,
 }
-fn pt2_to_pt3(xy: Pt2, z: f32) -> Pt3 {
-    Pt3::new(xy[0], xy[1], z)
-}
 struct Arrow {
     pos: Pt3,
-    vel: Pt3,
+    vel: Vec3,
 }
 impl Arrow {
     fn rot_of_xy(p: Pt2) -> f32 {
         Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &p.coords).angle()
     }
-    fn vel_to_rot_len(mut vel_xyz: Pt3) -> [f32; 2] {
-        vel_xyz.coords = vel_xyz.coords.normalize();
-        let xy = ortho(vel_xyz);
+    fn vel_to_rot_len(mut vel_xyz: Vec3) -> [f32; 2] {
+        vel_xyz = vel_xyz.normalize();
+        let xy = ortho(vel_xyz.into());
         [Self::rot_of_xy(xy), xy.coords.norm()]
     }
-    fn vel_to_rot_len_shadow(mut vel_xyz: Pt3) -> [f32; 2] {
-        vel_xyz.coords = vel_xyz.coords.normalize();
+    fn vel_to_rot_len_shadow(mut vel_xyz: Vec3) -> [f32; 2] {
+        vel_xyz = vel_xyz.normalize();
         vel_xyz[2] = 0.;
-        let xy = ortho(vel_xyz);
+        let xy = ortho(vel_xyz.into());
         [Self::rot_of_xy(xy), xy.coords.norm()]
     }
 }
@@ -203,6 +200,28 @@ trait Squarable: core::ops::Mul + Copy {
 impl<T: core::ops::Mul + Copy> Squarable for T {}
 
 impl MyGame {
+    fn recalculate_dude_vel(&mut self) {
+        let mut speed = WALK_SPEED;
+        if self.pressing.down.is_some() && self.pressing.right.is_some() {
+            speed /= ROOT_OF_2
+        };
+        match (self.pressing.right, &self.nocked) {
+            (Some(walk_right), Some(Nocked { aim_right, .. })) => {
+                speed *= if walk_right == *aim_right { 0.666 } else { 0.333 };
+            }
+            _ => {}
+        }
+        self.dude_vel[0] = match self.pressing.right {
+            Some(true) => speed,
+            Some(false) => -speed,
+            _ => 0.,
+        };
+        self.dude_vel[1] = match self.pressing.down {
+            Some(true) => speed,
+            Some(false) => -speed,
+            _ => 0.,
+        };
+    }
     fn recalculate_rotation_wrt(&mut self, wrt: Pt2) {
         if let Some(RclickAnchor { anchor_angle, anchor_pt }) = &mut self.rclick_anchor {
             let diff_is: Pt2 = wrt - ortho(self.dude).coords;
@@ -241,6 +260,7 @@ impl EventHandler for MyGame {
             KeyCode::Escape => ggez::event::quit(ctx),
             _ => return,
         }
+        self.recalculate_dude_vel();
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         match keycode {
@@ -250,36 +270,18 @@ impl EventHandler for MyGame {
             KeyCode::D if self.pressing.right == Some(true) => self.pressing.right = None,
             _ => return,
         }
+        self.recalculate_dude_vel();
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
         let mut draining = Draining::new(&mut self.arrows);
-        let mut speed = WALK_SPEED;
-        if self.pressing.down.is_some() && self.pressing.right.is_some() {
-            speed /= ROOT_OF_2
-        };
-        match (self.pressing.right, &self.nocked) {
-            (Some(walk_right), Some(Nocked { aim_right, .. })) => {
-                speed *= if walk_right == *aim_right { 0.666 } else { 0.333 };
-            }
-            _ => {}
-        }
-        self.dude[0] += match self.pressing.right {
-            Some(true) => speed,
-            Some(false) => -speed,
-            _ => 0.,
-        };
-        self.dude[1] += match self.pressing.down {
-            Some(true) => speed,
-            Some(false) => -speed,
-            _ => 0.,
-        };
+        self.dude += self.dude_vel;
         while let Some(mut entry) = draining.next() {
             let arrow: &mut Arrow = entry.get_mut();
-            let nsq = arrow.vel.coords.norm_squared().sqr() + 1.;
+            let nsq = arrow.vel.norm_squared().sqr() + 1.;
             arrow.vel += Pt3::new(0., 0., 0.5).coords; // gravity
             arrow.vel *= nsq.powf(0.996) / nsq;
-            arrow.pos += arrow.vel.coords;
+            arrow.pos += arrow.vel;
             let mut stuck = arrow.pos[2] >= 0.;
             for d in self.doodads.iter() {
                 let mut diff = d.pos - arrow.pos.coords;
@@ -352,7 +354,7 @@ impl EventHandler for MyGame {
                         let proj_v = pull_v * proj_scalar;
                         let perp_v = proj_v - duderel;
                         let z = -perp_v.norm() * 0.05;
-                        let vel: Pt3 = [pull_v[0], pull_v[1] * ROOT_OF_2, z].into();
+                        let vel = Vec3::from([pull_v[0], pull_v[1] * ROOT_OF_2, z]) + self.dude_vel;
                         self.assets.audio.loose[0].play().unwrap();
                         self.assets.audio.taut[tautness as usize].stop();
                         self.arrows
@@ -391,17 +393,20 @@ impl EventHandler for MyGame {
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        // type M = na::Matrix4<f32>;
-        // let (sx, sy) = ggez::graphics::size(ctx);
-        // let t: M = na::Translation::from(Vec3::new(
-        //     sx * 0.5 - self.dude.coords[0],
-        //     sy * 0.5 - self.dude.coords[1] / ROOT_OF_2,
-        //     0.,
-        // ))
-        // .into();
-        // let ident: M = M::identity();
-        // ggez::graphics::push_transform(ctx, Some(ident * t));
-        // ggez::graphics::apply_transformations(ctx)?;
+        type M = na::Matrix4<f32>;
+        let q: Pt2 = {
+            let (a, b) = ggez::graphics::size(ctx);
+            [a * 0.5, b * 0.8].into()
+        };
+        let t: M = na::Translation::from(Vec3::new(
+            q[0] - self.dude[0],
+            q[1] - self.dude[1] / ROOT_OF_2,
+            0.,
+        ))
+        .into();
+        let ident: M = M::identity();
+        ggez::graphics::push_transform(ctx, Some(ident * t));
+        ggez::graphics::apply_transformations(ctx)?;
         graphics::clear(ctx, GREEN);
         // the dude
         const DUDE_SCALE: [f32; 2] = [2.; 2];
@@ -546,7 +551,7 @@ impl EventHandler for MyGame {
                 };
                 for (dest, rotation) in [
                     //
-                    (start, dif_rotation_angle),
+                    (start + ortho(self.dude).coords - q.coords, dif_rotation_angle),
                     // (ortho(self.dude), dif_rotation_angle + PI),
                 ]
                 .iter()
