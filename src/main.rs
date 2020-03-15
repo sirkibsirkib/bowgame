@@ -1,4 +1,5 @@
 use core::f32::consts::PI;
+use ggez::conf::WindowMode;
 use ggez::{
     audio::{SoundSource, Source},
     event::{EventHandler, KeyCode, KeyMods, MouseButton},
@@ -6,7 +7,7 @@ use ggez::{
         self, spritebatch::SpriteBatch, Color, DrawMode, DrawParam, FilterMode, Image, Mesh,
         MeshBuilder, Rect, BLACK, WHITE,
     },
-    nalgebra::{self as na, Rotation2, Rotation3},
+    nalgebra::{self as na, Rotation2, Rotation3, Transform3, Translation3},
     *,
 };
 
@@ -18,6 +19,7 @@ struct Pressing {
 const MAX_PULL: f32 = 250.;
 const MIN_PULL: f32 = 30.;
 const ROOT_OF_2: f32 = 1.41421356;
+const WIN_DIMS: [f32; 2] = [800., 600.];
 
 mod assets;
 use assets::*;
@@ -26,15 +28,13 @@ use helper::*;
 
 fn main() {
     // Make a Context.
-    let (mut ctx, mut event_loop) =
-        ContextBuilder::new("bowdraw", "Christopher Esterhuyse").build().unwrap();
+    let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
+        .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
+        .build()
+        .unwrap();
     ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
     let mut my_game = MyGame::new(&mut ctx);
     event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
-}
-#[inline]
-fn ortho(n: Pt3) -> Pt2 {
-    [n[0], n[1] / ROOT_OF_2 + n[2] / ROOT_OF_2].into()
 }
 
 type Pt2 = na::Point2<f32>;
@@ -83,21 +83,86 @@ struct Doodad {
     pos: Pt3,
 }
 struct Camera {
-    world_pos: Vec3,
-    world_rot: Rotation3<f32>,
+    world_pos: Pt3,
+    world_rot: f32,
 }
 impl Default for Camera {
     fn default() -> Self {
-        Self { world_pos: [0.; 3].into(), world_rot: Rotation3::identity() }
+        Self { world_pos: [0.; 3].into(), world_rot: 0. }
     }
 }
 impl Camera {
-    fn ground_to_screen(&self, p: Pt3) -> Pt2 {
-        (self.world_rot * (p - self.world_pos)).xy()
+    fn vec_3_to_2(&self, v: Vec3) -> Vec2 {
+        let v: Vec3 = Rotation3::from_axis_angle(&Vec3::z_axis(), self.world_rot) * v;
+        [v[0], v[1] / ROOT_OF_2 + v[2] / ROOT_OF_2].into()
     }
-    fn screen_to_ground(&self, p: Pt2) -> Pt3 {
-        let p: Pt3 = [p[0], p[1], 0.].into();
-        (self.world_rot.transpose() * p) + self.world_pos
+    fn vec_2_to_3(&self, v: Vec2) -> Vec3 {
+        let v: Vec3 = [v[0], v[1] * ROOT_OF_2, 0.].into();
+        Rotation3::from_axis_angle(&Vec3::z_axis(), -self.world_rot) * v
+    }
+    fn pt_2_to_3(&self, p: Pt2) -> Pt3 {
+        // 1. extrapolate [x,y] into flat [x,y*sqrt(2),0]
+        let p: Pt3 = [p[0], p[1] * ROOT_OF_2, 0.].into();
+        let m = {
+            let mut m = Transform3::identity();
+
+            // 4. translate relative to camera origin
+            m *= Translation3::from(self.world_pos.coords);
+            // 3. rotate about the z axis
+            m *= Rotation3::from_axis_angle(&Vec3::z_axis(), -self.world_rot);
+            // 2. translate away from center of screen
+            m *= Translation3::from(-Vec3::new(
+                WIN_DIMS[0] * 0.5,
+                WIN_DIMS[1] * 0.5 / ROOT_OF_2,
+                0.,
+            ));
+            m
+        };
+        m * p
+    }
+    fn pt_3_to_2(&self, p: Pt3) -> Pt2 {
+        let m = {
+            let mut m = Transform3::identity();
+            // 3. translate to center of screen
+            m *=
+                Translation3::from(Vec3::new(WIN_DIMS[0] * 0.5, WIN_DIMS[1] * 0.5 * ROOT_OF_2, 0.));
+            // 2. rotate about the z axis
+            m *= Rotation3::from_axis_angle(&Vec3::z_axis(), self.world_rot);
+            // 1. translate relative to camera origin
+            m *= Translation3::from(-self.world_pos.coords);
+            m
+        };
+        let p: Pt3 = m * p;
+
+        // 4. fuse y and z axes
+        [p[0], p[1] / ROOT_OF_2 + p[2] / ROOT_OF_2].into()
+    }
+
+    // fn vec3_to_vec2(&self, v: Vec3) -> Vec2 {
+    //     let v = self.world_rot * v;
+    //     [v[0], v[1] / ROOT_OF_2 + v[2] / ROOT_OF_2].into()
+    // }
+    // fn pt_3_to_2(&self, p: Pt3) -> Pt2 {
+    //     let p = self.world_rot * (p - self.world_pos);
+    //     [p[0], p[1] / ROOT_OF_2 + p[2] / ROOT_OF_2].into()
+    // }
+    // fn screen_to_world(&self, p: Pt2) -> Pt3 {
+    //     let p: Pt3 = [p[0], p[1] * ROOT_OF_2, 0.].into();
+    //     (self.world_rot.transpose() * p) + self.world_pos.coords
+    // }
+    fn rot_of_xy(v: Vec2) -> f32 {
+        Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &v).angle()
+    }
+    fn vel_to_rot_len(&self, mut vel_xyz: Vec3) -> [f32; 2] {
+        vel_xyz = vel_xyz.normalize();
+        let xy = self.vec_3_to_2(vel_xyz);
+        [Self::rot_of_xy(xy), xy.norm()]
+    }
+    fn vel_to_rot_len_shadow(&self, mut vel_xyz: Vec3) -> [f32; 2] {
+        vel_xyz = vel_xyz.normalize();
+        vel_xyz[2] = 0.;
+        let xy = self.vec_3_to_2(vel_xyz);
+        [Self::rot_of_xy(xy), xy.norm()]
     }
 }
 
@@ -110,19 +175,19 @@ impl MyGame {
             last_mouse_at: [0.; 2].into(),
             rclick_anchor: None,
             pressing: Pressing::default(),
-            dude: [200., 290., 0.].into(),
+            dude: [0.; 3].into(),
             arrows: vec![],
             stuck_arrows: vec![],
             nocked: None,
             assets: Assets::new(ctx),
             doodads: vec![
                 //
-                Doodad { kind: DoodadKind::Rock, pos: Pt3::new(100., 100., 0.) },
-                Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(400., 250., 0.) },
-                Doodad { kind: DoodadKind::Pebbles, pos: Pt3::new(260., 320., 0.) },
-                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(170., 490., 0.) },
-                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(570., 440., 0.) },
-                Doodad { kind: DoodadKind::Bush, pos: Pt3::new(330., 540., 0.) },
+                Doodad { kind: DoodadKind::Rock, pos: Pt3::new(0., 0., 0.) },
+                Doodad { kind: DoodadKind::Shrub, pos: Pt3::new(300., 0., 0.) },
+                Doodad { kind: DoodadKind::Pebbles, pos: Pt3::new(0., 300., 0.) },
+                // Doodad { kind: DoodadKind::Bush, pos: Pt3::new(170., 490., 0.) },
+                // Doodad { kind: DoodadKind::Bush, pos: Pt3::new(570., 440., 0.) },
+                // Doodad { kind: DoodadKind::Bush, pos: Pt3::new(330., 540., 0.) },
             ],
         }
     }
@@ -154,22 +219,6 @@ struct Nocked {
 struct Arrow {
     pos: Pt3,
     vel: Vec3,
-}
-impl Arrow {
-    fn rot_of_xy(p: Pt2) -> f32 {
-        Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &p.coords).angle()
-    }
-    fn vel_to_rot_len(mut vel_xyz: Vec3) -> [f32; 2] {
-        vel_xyz = vel_xyz.normalize();
-        let xy = ortho(vel_xyz.into());
-        [Self::rot_of_xy(xy), xy.coords.norm()]
-    }
-    fn vel_to_rot_len_shadow(mut vel_xyz: Vec3) -> [f32; 2] {
-        vel_xyz = vel_xyz.normalize();
-        vel_xyz[2] = 0.;
-        let xy = ortho(vel_xyz.into());
-        [Self::rot_of_xy(xy), xy.coords.norm()]
-    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -224,8 +273,8 @@ impl MyGame {
     }
     fn recalculate_rotation_wrt(&mut self, wrt: Pt2) {
         if let Some(RclickAnchor { anchor_angle, anchor_pt }) = &mut self.rclick_anchor {
-            let diff_is: Pt2 = wrt - ortho(self.dude).coords;
-            let angle_is = Arrow::rot_of_xy(diff_is);
+            let diff_is: Pt2 = wrt - self.camera.pt_3_to_2(self.dude).coords;
+            let angle_is = Camera::rot_of_xy(diff_is.coords);
 
             // ggez::input::mouse::set_position(ctx, anchor_pt).unwrap();
             let axisangle = na::Vector3::z() * (angle_is - *anchor_angle);
@@ -257,6 +306,7 @@ impl EventHandler for MyGame {
             KeyCode::A => self.pressing.right = Some(false),
             KeyCode::S => self.pressing.down = Some(true),
             KeyCode::D => self.pressing.right = Some(true),
+            KeyCode::E => self.camera.world_rot += 0.1,
             KeyCode::Escape => ggez::event::quit(ctx),
             _ => return,
         }
@@ -276,6 +326,7 @@ impl EventHandler for MyGame {
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
         let mut draining = Draining::new(&mut self.arrows);
         self.dude += self.dude_vel;
+        self.camera.world_pos = self.dude;
         while let Some(mut entry) = draining.next() {
             let arrow: &mut Arrow = entry.get_mut();
             let nsq = arrow.vel.norm_squared().sqr() + 1.;
@@ -319,9 +370,11 @@ impl EventHandler for MyGame {
             }
             MouseButton::Right => {
                 let anchor_pt: Pt2 = [x, y].into();
-                let anchor_diff: Pt2 = anchor_pt - ortho(self.dude).coords;
-                self.rclick_anchor =
-                    Some(RclickAnchor { anchor_pt, anchor_angle: Arrow::rot_of_xy(anchor_diff) })
+                let anchor_diff: Pt2 = anchor_pt - self.camera.pt_3_to_2(self.dude).coords;
+                self.rclick_anchor = Some(RclickAnchor {
+                    anchor_pt,
+                    anchor_angle: Camera::rot_of_xy(anchor_diff.coords),
+                })
             }
             _ => {}
         }
@@ -349,7 +402,7 @@ impl EventHandler for MyGame {
                             return; // no arrow!
                         }
                         let pull_v = line_v * 0.11;
-                        let duderel = ortho(self.dude).coords - end.coords;
+                        let duderel = self.camera.pt_3_to_2(self.dude).coords - end.coords;
                         let proj_scalar = pull_v.dot(&duderel) / pull_v.dot(&pull_v);
                         let proj_v = pull_v * proj_scalar;
                         let perp_v = proj_v - duderel;
@@ -393,20 +446,12 @@ impl EventHandler for MyGame {
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        type M = na::Matrix4<f32>;
-        let q: Pt2 = {
-            let (a, b) = ggez::graphics::size(ctx);
-            [a * 0.5, b * 0.8].into()
-        };
-        let t: M = na::Translation::from(Vec3::new(
-            q[0] - self.dude[0],
-            q[1] - self.dude[1] / ROOT_OF_2,
-            0.,
-        ))
-        .into();
-        let ident: M = M::identity();
-        ggez::graphics::push_transform(ctx, Some(ident * t));
-        ggez::graphics::apply_transformations(ctx)?;
+        // type M = na::Matrix4<f32>;
+        // let q: Pt2 = [WIN_DIMS[0] * 0.5, WIN_DIMS[1] * 0.5].into();
+        // let t: M = na::Translation::from(Vec3::new(q[0], q[1], 0.)).into();
+        // let ident: M = M::identity();
+        // ggez::graphics::push_transform(ctx, Some(ident * t));
+        // ggez::graphics::apply_transformations(ctx)?;
         graphics::clear(ctx, GREEN);
         // the dude
         const DUDE_SCALE: [f32; 2] = [2.; 2];
@@ -420,7 +465,7 @@ impl EventHandler for MyGame {
         ];
         let dude_param = DrawParam {
             src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
-            dest: ortho(self.dude).into(),
+            dest: self.camera.pt_3_to_2(self.dude).into(),
             color: WHITE,
             scale: facing_dude_scale.into(),
             offset: [0.5, 0.5].into(),
@@ -432,16 +477,16 @@ impl EventHandler for MyGame {
         for doodad in self.doodads.iter() {
             self.assets.tex.doodads.add(DrawParam {
                 src: doodad.kind.rect(),
-                dest: ortho(doodad.pos).into(),
+                dest: self.camera.pt_3_to_2(doodad.pos).into(),
                 scale: [1.; 2].into(),
                 offset: [0.5, 0.5].into(),
                 ..Default::default()
             });
         }
-        let arrow_draw = |y: f32, arrow: &Arrow, arrow_batch: &mut SpriteBatch| {
+        let arrow_draw = |y: f32, arrow: &Arrow, arrow_batch: &mut SpriteBatch, camera: &Camera| {
             let src = Rect { x: 0., y, w: 1., h: 0.25 };
-            let dest = ortho(flatten(arrow.pos));
-            let [rotation, len] = Arrow::vel_to_rot_len_shadow(arrow.vel);
+            let dest = camera.pt_3_to_2(flatten(arrow.pos));
+            let [rotation, len] = camera.vel_to_rot_len_shadow(arrow.vel);
             let p = DrawParam {
                 src,
                 dest: dest.into(),
@@ -453,8 +498,8 @@ impl EventHandler for MyGame {
             };
             //real
             arrow_batch.add(p);
-            let dest = ortho(arrow.pos);
-            let [rotation, len] = Arrow::vel_to_rot_len(arrow.vel);
+            let dest = camera.pt_3_to_2(arrow.pos);
+            let [rotation, len] = camera.vel_to_rot_len(arrow.vel);
             let p = DrawParam {
                 src,
                 dest: dest.into(),
@@ -466,10 +511,10 @@ impl EventHandler for MyGame {
             arrow_batch.add(p);
         };
         for arrow in self.arrows.iter() {
-            arrow_draw(0.00, arrow, &mut self.assets.tex.arrow_batch);
+            arrow_draw(0.00, arrow, &mut self.assets.tex.arrow_batch, &self.camera);
         }
         for arrow in self.stuck_arrows.iter() {
-            arrow_draw(0.25, arrow, &mut self.assets.tex.arrow_batch);
+            arrow_draw(0.25, arrow, &mut self.assets.tex.arrow_batch, &self.camera);
         }
         let main_src = {
             let x = if self.pressing.down.is_some() || self.pressing.right.is_some() {
@@ -533,7 +578,7 @@ impl EventHandler for MyGame {
                 let nock_at = self.dude + Pt3::new(0., 0., -3.).coords;
                 let p = DrawParam {
                     src: Rect { x: 0., y: 0., h: 0.25, w: 1. },
-                    dest: ortho(nock_at).into(),
+                    dest: self.camera.pt_3_to_2(nock_at).into(),
                     color: WHITE,
                     scale: [ARROW_SCALE; 2].into(),
                     offset: [0., 0.5].into(),
@@ -551,7 +596,8 @@ impl EventHandler for MyGame {
                 };
                 for (dest, rotation) in [
                     //
-                    (start + ortho(self.dude).coords - q.coords, dif_rotation_angle),
+                    (start, dif_rotation_angle),
+                    // (start + ortho(self.dude).coords - q.coords, dif_rotation_angle),
                     // (ortho(self.dude), dif_rotation_angle + PI),
                 ]
                 .iter()
