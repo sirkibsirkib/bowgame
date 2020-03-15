@@ -15,8 +15,8 @@ struct Pressing {
     right: Option<bool>,
     down: Option<bool>,
 }
-
 const MAX_PULL: f32 = 250.;
+const MIN_PULL: f32 = 30.;
 const ROOT_OF_2: f32 = 1.41421356;
 
 mod assets;
@@ -26,16 +26,11 @@ use helper::*;
 
 fn main() {
     // Make a Context.
-    let (mut ctx, mut event_loop) = ContextBuilder::new("my_game", "Cool Game Author")
-        .build()
-        .expect("aieee, could not create ggez context!");
-
+    let (mut ctx, mut event_loop) =
+        ContextBuilder::new("bowdraw", "Christopher Esterhuyse").build().unwrap();
     ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
     let mut my_game = MyGame::new(&mut ctx);
-    match event::run(&mut ctx, &mut event_loop, &mut my_game) {
-        Ok(_) => println!("Exited cleanly."),
-        Err(e) => println!("Error occured: {}", e),
-    }
+    event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
 }
 #[inline]
 fn ortho(n: Pt3) -> Pt2 {
@@ -44,6 +39,8 @@ fn ortho(n: Pt3) -> Pt2 {
 
 type Pt2 = na::Point2<f32>;
 type Pt3 = na::Point3<f32>;
+type Vec2 = na::Vector2<f32>;
+type Vec3 = na::Vector3<f32>;
 
 struct Assets {
     audio: AudioAssets,
@@ -85,11 +82,31 @@ struct Doodad {
     kind: DoodadKind,
     pos: Pt3,
 }
+struct Camera {
+    world_pos: Vec3,
+    world_rot: Rotation3<f32>,
+}
+impl Default for Camera {
+    fn default() -> Self {
+        Self { world_pos: [0.; 3].into(), world_rot: Rotation3::identity() }
+    }
+}
+impl Camera {
+    fn ground_to_screen(&self, p: Pt3) -> Pt2 {
+        (self.world_rot * (p - self.world_pos)).xy()
+    }
+    fn screen_to_ground(&self, p: Pt2) -> Pt3 {
+        let p: Pt3 = [p[0], p[1], 0.].into();
+        (self.world_rot.transpose() * p) + self.world_pos
+    }
+}
 
 impl MyGame {
     fn new(ctx: &mut Context) -> Self {
         MyGame {
+            camera: Camera::default(),
             ticks: 0,
+            dude_vel: [0.; 3].into(),
             last_mouse_at: [0.; 2].into(),
             rclick_anchor: None,
             pressing: Pressing::default(),
@@ -116,9 +133,11 @@ struct RclickAnchor {
     anchor_angle: f32,
 }
 struct MyGame {
+    camera: Camera,
     ticks: usize,
     pressing: Pressing,
     dude: Pt3,
+    dude_vel: Vec3,
     arrows: Vec<Arrow>,
     stuck_arrows: Vec<Arrow>,
     nocked: Option<Nocked>,
@@ -220,7 +239,7 @@ impl EventHandler for MyGame {
             KeyCode::S => self.pressing.down = Some(true),
             KeyCode::D => self.pressing.right = Some(true),
             KeyCode::Escape => ggez::event::quit(ctx),
-            _ => {}
+            _ => return,
         }
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
@@ -229,7 +248,7 @@ impl EventHandler for MyGame {
             KeyCode::A if self.pressing.right == Some(false) => self.pressing.right = None,
             KeyCode::S if self.pressing.down == Some(true) => self.pressing.down = None,
             KeyCode::D if self.pressing.right == Some(true) => self.pressing.right = None,
-            _ => {}
+            _ => return,
         }
     }
 
@@ -311,13 +330,29 @@ impl EventHandler for MyGame {
             MouseButton::Left => {
                 if let Some(Nocked { start, tautness, .. }) = self.nocked.take() {
                     if tautness != Tautness::None {
-                        let second: Pt2 = [x, y].into();
-                        let diff = start - second.coords;
-                        let n = diff.coords.norm();
-                        let diff = diff * n.min(MAX_PULL) / n;
-                        let diff = diff * 0.12;
-                        let z = -(second - ortho(self.dude).coords).coords.norm() * 0.05;
-                        let vel: Pt3 = [diff[0], diff[1] * ROOT_OF_2, z].into();
+                        /*
+                        compute arrow's initial [x,y,z] velocity from three points: start, end, dude.
+                        use end-start as a basis vector. project dude onto it to acquire the -z force.
+
+                            <--x,y force------>
+                            start--proj-----end  ^
+                                    |            | -z force
+                                    |            |
+                                    duderrel     V
+                        */
+                        let end: Pt2 = [x, y].into();
+                        let line_v = start.coords - end.coords;
+                        let nsq = line_v.norm_squared();
+                        if nsq < MIN_PULL.sqr() || MAX_PULL.sqr() < nsq {
+                            return; // no arrow!
+                        }
+                        let pull_v = line_v * 0.11;
+                        let duderel = ortho(self.dude).coords - end.coords;
+                        let proj_scalar = pull_v.dot(&duderel) / pull_v.dot(&pull_v);
+                        let proj_v = pull_v * proj_scalar;
+                        let perp_v = proj_v - duderel;
+                        let z = -perp_v.norm() * 0.05;
+                        let vel: Pt3 = [pull_v[0], pull_v[1] * ROOT_OF_2, z].into();
                         self.assets.audio.loose[0].play().unwrap();
                         self.assets.audio.taut[tautness as usize].stop();
                         self.arrows
@@ -356,6 +391,17 @@ impl EventHandler for MyGame {
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
+        // type M = na::Matrix4<f32>;
+        // let (sx, sy) = ggez::graphics::size(ctx);
+        // let t: M = na::Translation::from(Vec3::new(
+        //     sx * 0.5 - self.dude.coords[0],
+        //     sy * 0.5 - self.dude.coords[1] / ROOT_OF_2,
+        //     0.,
+        // ))
+        // .into();
+        // let ident: M = M::identity();
+        // ggez::graphics::push_transform(ctx, Some(ident * t));
+        // ggez::graphics::apply_transformations(ctx)?;
         graphics::clear(ctx, GREEN);
         // the dude
         const DUDE_SCALE: [f32; 2] = [2.; 2];
@@ -439,9 +485,8 @@ impl EventHandler for MyGame {
         let end: Pt2 = ggez::input::mouse::position(ctx).into();
         match self.nocked {
             Some(Nocked { start, tautness, .. }) if start != end => {
-                let dif = end - start.coords;
-                let dif_rotation =
-                    Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &dif.coords);
+                let line_v = end.coords - start.coords;
+                let dif_rotation = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &line_v);
                 let dif_rotation_angle = dif_rotation.angle();
                 // let dif_rotation_angle_neg = dif_rotation_angle + PI;
 
@@ -492,12 +537,17 @@ impl EventHandler for MyGame {
                 };
                 self.assets.tex.arrow_batch.add(p);
 
-                let color = if tautness.level() >= 2 { WHITE } else { RED };
-                let linelen = (start - end.coords).coords.norm().min(MAX_PULL);
+                let n = line_v.norm();
+
+                let (color, linelen) = match n {
+                    n if n < MIN_PULL => (RED, MIN_PULL),
+                    n if n > MAX_PULL => (RED, MAX_PULL),
+                    _ => (WHITE, n),
+                };
                 for (dest, rotation) in [
                     //
                     (start, dif_rotation_angle),
-                    (ortho(self.dude), dif_rotation_angle + PI),
+                    // (ortho(self.dude), dif_rotation_angle + PI),
                 ]
                 .iter()
                 .copied()
