@@ -33,8 +33,10 @@ impl Assets {
     pub fn new(ctx: &mut Context) -> Self {
         let tex = TexAssets {
             cross: MeshBuilder::new()
-                .rectangle(DrawMode::fill(), Rect { x: -0.5, y: -0.1, w: 1.0, h: 0.2 }, WHITE)
-                .rectangle(DrawMode::fill(), Rect { x: -0.1, y: -0.5, w: 0.2, h: 1.0 }, WHITE)
+                .line(&[[-1., -1.], [1., 1.]], 0.19, graphics::WHITE)
+                .unwrap()
+                .line(&[[-1., 1.], [1., -1.]], 0.19, graphics::WHITE)
+                .unwrap()
                 .build(ctx)
                 .unwrap(),
             doodads: SpriteBatch::new(linear(Image::new(ctx, "/doodads.png").unwrap())),
@@ -72,9 +74,9 @@ impl Assets {
         let audio = AudioAssets {
             taut: [
                 ggez::audio::Source::new(ctx, "/taut1.wav").unwrap(),
+                ggez::audio::Source::new(ctx, "/taut1.wav").unwrap(),
                 ggez::audio::Source::new(ctx, "/taut2.wav").unwrap(),
                 ggez::audio::Source::new(ctx, "/taut3.wav").unwrap(),
-                ggez::audio::Source::new(ctx, "/taut4.wav").unwrap(),
                 ggez::audio::Source::new(ctx, "/taut4.wav").unwrap(),
             ],
             twang: [

@@ -18,7 +18,7 @@ struct Pressing {
     clockwise: Option<bool>,
 }
 const MAX_PULL: f32 = 250.;
-const MIN_PULL: f32 = 30.;
+const MIN_PULL: f32 = 60.;
 const ROOT_OF_2: f32 = 1.41421356;
 const WIN_DIMS: [f32; 2] = [800., 600.];
 
@@ -312,11 +312,11 @@ impl MyGame {
             let proj_scalar = pull_v.dot(&duderel) / pull_v.dot(&pull_v);
             let proj_v = pull_v * proj_scalar;
             let perp_v = proj_v - duderel;
-            let z = -perp_v.norm() * 0.07;
+            let z = -(perp_v.norm() + 20.) * 0.07;
             let mut vel = self.camera.vec_2_to_3(pull_v);
             vel[2] = z;
             vel += self.dude_vel;
-            Some(Arrow { pos: self.dude + Pt3::new(0., 0., -25.).coords, vel })
+            Some(Arrow { pos: self.dude + Pt3::new(0., 0., -12.).coords, vel })
         } else {
             None
         }
@@ -445,8 +445,8 @@ impl EventHandler for MyGame {
             *aim_right = diff[0] < 0.;
             let new_tautness = match diff.coords.norm_squared() {
                 x if x < 30.0f32.sqr() => Tautness::None,
-                x if x < 70.0f32.sqr() => Tautness::Low,
-                x if x < 120.0f32.sqr() => Tautness::Med,
+                x if x < 60.0f32.sqr() => Tautness::Low,
+                x if x < 110.0f32.sqr() => Tautness::Med,
                 x if x < 180.0f32.sqr() => Tautness::High,
                 _ => Tautness::Max,
             };
@@ -634,8 +634,7 @@ impl EventHandler for MyGame {
                                 &self.assets.tex.cross,
                                 DrawParam {
                                     dest: last.into(),
-                                    scale: [22.6, 22.6 / ROOT_OF_2].into(),
-                                    rotation: PI * 0.5,
+                                    scale: [8., 8. / ROOT_OF_2].into(),
                                     ..Default::default()
                                 },
                             )?;
