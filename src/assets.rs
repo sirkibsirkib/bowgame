@@ -32,6 +32,11 @@ fn linear(mut image: Image) -> Image {
 impl Assets {
     pub fn new(ctx: &mut Context) -> Self {
         let tex = TexAssets {
+            cross: MeshBuilder::new()
+                .rectangle(DrawMode::fill(), Rect { x: -0.5, y: -0.1, w: 1.0, h: 0.2 }, WHITE)
+                .rectangle(DrawMode::fill(), Rect { x: -0.1, y: -0.5, w: 0.2, h: 1.0 }, WHITE)
+                .build(ctx)
+                .unwrap(),
             doodads: SpriteBatch::new(linear(Image::new(ctx, "/doodads.png").unwrap())),
             archer_back: linear(Image::new(ctx, "/archer_back.png").unwrap()),
             archer: linear(Image::new(ctx, "/archer.png").unwrap()),

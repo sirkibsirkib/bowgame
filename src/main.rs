@@ -15,6 +15,7 @@ use ggez::{
 struct Pressing {
     right: Option<bool>,
     down: Option<bool>,
+    clockwise: Option<bool>,
 }
 const MAX_PULL: f32 = 250.;
 const MIN_PULL: f32 = 30.;
@@ -47,6 +48,7 @@ struct Assets {
     tex: TexAssets,
 }
 struct TexAssets {
+    cross: Mesh,
     arrow_batch: SpriteBatch,
     doodads: SpriteBatch,
     limb: Mesh,
@@ -252,16 +254,20 @@ impl MyGame {
             }
             _ => {}
         }
-        self.dude_vel[0] = match self.pressing.right {
-            Some(true) => speed,
-            Some(false) => -speed,
-            _ => 0.,
-        };
-        self.dude_vel[1] = match self.pressing.down {
-            Some(true) => speed,
-            Some(false) => -speed,
-            _ => 0.,
-        };
+        let vel: Vec2 = [
+            match self.pressing.right {
+                Some(true) => speed,
+                Some(false) => -speed,
+                _ => 0.,
+            },
+            match self.pressing.down {
+                Some(true) => speed,
+                Some(false) => -speed,
+                _ => 0.,
+            },
+        ]
+        .into();
+        self.dude_vel = self.camera.vec_2_to_3(vel);
     }
     fn recalculate_rotation_wrt(&mut self, wrt: Pt2) {
         if let Some(RclickAnchor { anchor_angle, anchor_pt }) = &mut self.rclick_anchor {
@@ -327,9 +333,11 @@ impl EventHandler for MyGame {
         match keycode {
             KeyCode::W => self.pressing.down = Some(false),
             KeyCode::A => self.pressing.right = Some(false),
+            KeyCode::Q => self.pressing.clockwise = Some(false),
+            //
             KeyCode::S => self.pressing.down = Some(true),
             KeyCode::D => self.pressing.right = Some(true),
-            KeyCode::E => self.camera.world_rot += 0.1,
+            KeyCode::E => self.pressing.clockwise = Some(true),
             KeyCode::Escape => ggez::event::quit(ctx),
             _ => return,
         }
@@ -339,8 +347,11 @@ impl EventHandler for MyGame {
         match keycode {
             KeyCode::W if self.pressing.down == Some(false) => self.pressing.down = None,
             KeyCode::A if self.pressing.right == Some(false) => self.pressing.right = None,
+            KeyCode::Q if self.pressing.clockwise == Some(false) => self.pressing.clockwise = None,
+            //
             KeyCode::S if self.pressing.down == Some(true) => self.pressing.down = None,
             KeyCode::D if self.pressing.right == Some(true) => self.pressing.right = None,
+            KeyCode::E if self.pressing.clockwise == Some(true) => self.pressing.clockwise = None,
             _ => return,
         }
         self.recalculate_dude_vel();
@@ -349,6 +360,11 @@ impl EventHandler for MyGame {
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
         let mut draining = Draining::new(&mut self.arrows);
         self.dude += self.dude_vel;
+        self.camera.world_rot += match self.pressing.clockwise {
+            None => 0.,
+            Some(true) => -0.05,
+            Some(false) => 0.05,
+        };
         self.camera.world_pos = self.dude;
         while let Some(mut entry) = draining.next() {
             let arrow: &mut Arrow = entry.get_mut();
@@ -606,6 +622,23 @@ impl EventHandler for MyGame {
                                 .build(ctx)
                                 .unwrap();
                             graphics::draw(ctx, &mesh, DrawParam::default())?;
+                            let last = linebuf.iter().copied().last().unwrap();
+                            let mesh = MeshBuilder::new()
+                                .line(&[linebuf[0], last], 1., BLACK)
+                                .unwrap()
+                                .build(ctx)
+                                .unwrap();
+                            graphics::draw(ctx, &mesh, DrawParam::default())?;
+                            graphics::draw(
+                                ctx,
+                                &self.assets.tex.cross,
+                                DrawParam {
+                                    dest: last.into(),
+                                    scale: [22.6, 22.6 / ROOT_OF_2].into(),
+                                    rotation: PI * 0.5,
+                                    ..Default::default()
+                                },
+                            )?;
                         }
                         (WHITE, n)
                     }
