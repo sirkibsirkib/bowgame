@@ -32,10 +32,10 @@ pub(crate) fn starting_doodads(rng: &mut SmallRng) -> Vec<Doodad> {
             }
         }
     }
-    let num = rng.gen_range(50, 80);
+    let num = rng.gen_range(100, 130);
     let f = move || Doodad {
         kind: rng.gen(),
-        pos: Pt3::new(rng.gen_range(-500., 500.), rng.gen_range(-500., 500.), 0.),
+        pos: Pt3::new(rng.gen_range(-1500., 1500.), rng.gen_range(-1500., 1500.), 0.),
     };
     std::iter::repeat_with(f).take(num).collect()
 }
@@ -76,6 +76,10 @@ impl Assets {
             loose: [
                 //
                 ggez::audio::Source::new(ctx, "/loose1.wav").unwrap(),
+            ],
+            thud: [
+                //
+                ggez::audio::Source::new(ctx, "/thud1.wav").unwrap(),
             ],
         };
         Assets { audio, tex }

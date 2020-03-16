@@ -11,8 +11,6 @@ use ggez::{
     *,
 };
 
-const AIM_ASSIST: u8 = 1;
-
 use rand::{
     distributions::{Distribution, Standard},
     rngs::SmallRng,
@@ -29,6 +27,7 @@ const MAX_PULL: f32 = 250.;
 const MIN_PULL: f32 = 60.;
 const ROOT_OF_2: f32 = 1.41421356;
 const WIN_DIMS: [f32; 2] = [800., 600.];
+const ARM_Z: f32 = -29.;
 
 mod assets;
 use assets::*;
@@ -69,6 +68,7 @@ struct AudioAssets {
     taut: [Source; 5],
     loose: [Source; 1],
     twang: [Source; 3],
+    thud: [Source; 1],
 }
 enum DoodadKind {
     Bush,
@@ -122,8 +122,8 @@ impl Camera {
             m *= Rotation3::from_axis_angle(&Vec3::z_axis(), -self.world_rot);
             // 2. translate away from center of screen
             m *= Translation3::from(-Vec3::new(
-                WIN_DIMS[0] * 0.5,
-                WIN_DIMS[1] * 0.5 / ROOT_OF_2,
+                WIN_DIMS[0] * 0.3,
+                WIN_DIMS[1] * 0.7 / ROOT_OF_2,
                 0.,
             ));
             m
@@ -135,7 +135,7 @@ impl Camera {
             let mut m = Transform3::identity();
             // 3. translate to center of screen
             m *=
-                Translation3::from(Vec3::new(WIN_DIMS[0] * 0.5, WIN_DIMS[1] * 0.5 * ROOT_OF_2, 0.));
+                Translation3::from(Vec3::new(WIN_DIMS[0] * 0.3, WIN_DIMS[1] * 0.7 * ROOT_OF_2, 0.));
             // 2. rotate about the z axis
             m *= Rotation3::from_axis_angle(&Vec3::z_axis(), self.world_rot);
             // 1. translate relative to camera origin
@@ -170,6 +170,7 @@ impl MyGame {
         MyGame {
             baddies: (0..3)
                 .map(|_| Baddie {
+                    stuck_arrows: vec![],
                     health: 1.0,
                     entity: Entity {
                         pos: Self::rand_baddie_spot(&mut rng, dude.pos),
@@ -178,6 +179,7 @@ impl MyGame {
                 })
                 .collect(),
             camera: Camera::default(),
+            aim_assist: false,
             ticks: 0,
             dude,
             last_mouse_at: [0.; 2].into(),
@@ -198,6 +200,7 @@ struct RclickAnchor {
     anchor_angle: f32,
 }
 struct MyGame {
+    aim_assist: bool,
     camera: Camera,
     ticks: usize,
     pressing: Pressing,
@@ -219,8 +222,10 @@ struct Nocked {
 }
 struct Baddie {
     entity: Entity,
+    stuck_arrows: Vec<Entity>,
     health: f32,
 }
+#[derive(Clone)]
 struct Entity {
     pos: Pt3,
     vel: Vec3,
@@ -340,7 +345,7 @@ impl MyGame {
             let mut vel = self.camera.vec_2_to_3(pull_v);
             vel[2] = z;
             vel += self.dude.vel;
-            Some(Entity { pos: self.dude.pos + Pt3::new(0., 0., -12.).coords, vel })
+            Some(Entity { pos: self.dude.pos + Pt3::new(0., 0., ARM_Z).coords, vel })
         } else {
             None
         }
@@ -372,6 +377,7 @@ impl EventHandler for MyGame {
             KeyCode::D => self.pressing.right = Some(true),
             KeyCode::E => self.pressing.clockwise = Some(true),
             KeyCode::Escape => ggez::event::quit(ctx),
+            KeyCode::Space => self.aim_assist ^= true,
             _ => return,
         }
         self.recalculate_dude_vel();
@@ -402,21 +408,28 @@ impl EventHandler for MyGame {
             Some(false) => 0.05,
         };
         self.camera.world_pos = self.dude.pos;
-        while let Some(mut entry) = draining.next() {
+        'entry_loop: while let Some(mut entry) = draining.next() {
             let arrow: &mut Entity = entry.get_mut();
             arrow.update();
             let mut stuck = arrow.pos[2] >= 0.;
             for b in &mut self.baddies {
                 let mut baddie_dist = arrow.pos.coords - b.entity.pos.coords;
                 baddie_dist[2] *= 0.25;
-                if baddie_dist.norm() < 40. {
+                if baddie_dist.norm() < 32. {
+                    b.entity.vel = [0.; 3].into();
                     b.health += arrow.pos[2] * 0.01;
+                    let mut arrow = entry.take();
+                    arrow.pos -= b.entity.pos.coords;
                     if b.health <= 0. {
                         // "killed"
                         b.health = 1.;
                         b.entity.pos = Self::rand_baddie_spot(&mut self.rng, self.dude.pos);
+                        b.stuck_arrows.clear();
+                    } else {
+                        b.stuck_arrows.push(arrow);
                     }
-                    stuck = true;
+                    self.assets.audio.thud[0].play().unwrap();
+                    continue 'entry_loop;
                 }
             }
             for d in self.doodads.iter() {
@@ -426,7 +439,6 @@ impl EventHandler for MyGame {
                 let mut diff = d.pos - arrow.pos.coords;
                 diff[2] *= 0.5;
                 if diff.coords.norm_squared() < 400. {
-                    println!("STICK");
                     stuck = true;
                 }
             }
@@ -446,7 +458,7 @@ impl EventHandler for MyGame {
             _ => {}
         }
         self.ticks = self.ticks.wrapping_add(1);
-        if self.ticks % 64 == 0 {
+        if self.ticks % 32 == 0 {
             // recompute baddie trajectory
             for b in &mut self.baddies {
                 b.entity.vel = (self.dude.pos - b.entity.pos).normalize();
@@ -528,9 +540,11 @@ impl EventHandler for MyGame {
             DUDE_SCALE[0] * if right_facing { 1. } else { -1. },
             DUDE_SCALE[1],
         ];
+        let dude_arm_pos = self.camera.pt_3_to_2(self.dude.pos + Vec3::new(0., 0., ARM_Z));
+        let dude_feet_pos = self.camera.pt_3_to_2(self.dude.pos);
         let dude_param = DrawParam {
             src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
-            dest: self.camera.pt_3_to_2(self.dude.pos).into(),
+            dest: dude_arm_pos.into(),
             color: WHITE,
             scale: facing_dude_scale.into(),
             offset: [0.5, 0.5].into(),
@@ -547,18 +561,6 @@ impl EventHandler for MyGame {
                 ..Default::default()
             });
         }
-        // baddie
-        for b in &self.baddies {
-            self.assets.tex.doodads.add(DrawParam {
-                src: DoodadKind::Rock.rect(),
-                dest: self.camera.pt_3_to_2(b.entity.pos).into(),
-                color: Color { r: 1.0, g: b.health, b: b.health, a: 1. },
-                scale: [2.1, 5.0].into(),
-                offset: [0.5, 0.75].into(),
-                ..Default::default()
-            });
-        }
-
         let arrow_draw =
             |y: f32, arrow: &Entity, arrow_batch: &mut SpriteBatch, camera: &Camera| {
                 let src = Rect { x: 0., y, w: 1., h: 0.25 };
@@ -587,6 +589,23 @@ impl EventHandler for MyGame {
                 };
                 arrow_batch.add(p);
             };
+        // baddie
+        for b in &self.baddies {
+            self.assets.tex.doodads.add(DrawParam {
+                src: DoodadKind::Rock.rect(),
+                dest: self.camera.pt_3_to_2(b.entity.pos).into(),
+                color: Color { r: 1.0, g: b.health, b: b.health, a: 1. },
+                scale: [3.1, 5.0].into(),
+                offset: [0.5, 0.75].into(),
+                ..Default::default()
+            });
+            for arrow in &b.stuck_arrows {
+                let mut a: Entity = Entity::clone(arrow);
+                a.pos += b.entity.pos.coords;
+                arrow_draw(0.25, &a, &mut self.assets.tex.arrow_batch, &self.camera);
+            }
+        }
+
         for arrow in self.arrows.iter() {
             arrow_draw(0.00, arrow, &mut self.assets.tex.arrow_batch, &self.camera);
         }
@@ -615,7 +634,6 @@ impl EventHandler for MyGame {
                 let line_v = end.coords - nocked.start.coords;
                 let dif_rotation = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &line_v);
                 let dif_rotation_angle = dif_rotation.angle();
-                // let dif_rotation_angle_neg = dif_rotation_angle + PI;
 
                 let [aim_angle, arm_angle] = if nocked.tautness.level() >= 2 {
                     let aim_angle = dif_rotation_angle + PI;
@@ -653,7 +671,7 @@ impl EventHandler for MyGame {
                 )?;
 
                 // nocked arrow
-                let nock_at = self.dude.pos + Pt3::new(0., 0., -3.).coords;
+                let nock_at = self.dude.pos + Pt3::new(0., 0., ARM_Z).coords;
                 let p = DrawParam {
                     src: Rect { x: 0., y: 0., h: 0.25, w: 1. },
                     dest: self.camera.pt_3_to_2(nock_at).into(),
@@ -665,59 +683,57 @@ impl EventHandler for MyGame {
                 };
                 self.assets.tex.arrow_batch.add(p);
 
-                if AIM_ASSIST >= 1 {
-                    let n = line_v.norm();
-                    let (color, linelen) = match n {
-                        n if n < MIN_PULL => (RED, MIN_PULL),
-                        n if n > MAX_PULL => (RED, MAX_PULL),
-                        _ => {
-                            if AIM_ASSIST >= 2 {
-                                let mut arrow = self.nock_to_arrow(&nocked, end).unwrap();
-                                let mut linebuf = vec![];
-                                while arrow.pos[2] < 0. {
-                                    linebuf.push(self.camera.pt_3_to_2(arrow.pos));
-                                    arrow.update();
-                                }
-                                if linebuf.len() >= 2 {
-                                    let mesh = MeshBuilder::new()
-                                        .line(&linebuf, 1., BLUE)
-                                        .unwrap()
-                                        .build(ctx)
-                                        .unwrap();
-                                    graphics::draw(ctx, &mesh, DrawParam::default())?;
-                                    let last = linebuf.iter().copied().last().unwrap();
-                                    let mesh = MeshBuilder::new()
-                                        .line(&[linebuf[0], last], 1., BLACK)
-                                        .unwrap()
-                                        .build(ctx)
-                                        .unwrap();
-                                    graphics::draw(ctx, &mesh, DrawParam::default())?;
-                                    graphics::draw(
-                                        ctx,
-                                        &self.assets.tex.cross,
-                                        DrawParam {
-                                            dest: last.into(),
-                                            scale: [8., 8. / ROOT_OF_2].into(),
-                                            ..Default::default()
-                                        },
-                                    )?;
-                                }
+                let n = line_v.norm();
+                let (color, linelen) = match n {
+                    n if n < MIN_PULL => (RED, MIN_PULL),
+                    n if n > MAX_PULL => (RED, MAX_PULL),
+                    _ => {
+                        if self.aim_assist {
+                            let mut arrow = self.nock_to_arrow(&nocked, end).unwrap();
+                            let mut linebuf = vec![];
+                            while arrow.pos[2] < 0. {
+                                linebuf.push(self.camera.pt_3_to_2(arrow.pos));
+                                arrow.update();
                             }
-                            (WHITE, n)
+                            if linebuf.len() >= 2 {
+                                let mesh = MeshBuilder::new()
+                                    .line(&linebuf, 1., BLUE)
+                                    .unwrap()
+                                    .build(ctx)
+                                    .unwrap();
+                                graphics::draw(ctx, &mesh, DrawParam::default())?;
+                                let last = linebuf.iter().copied().last().unwrap();
+                                let mesh = MeshBuilder::new()
+                                    .line(&[dude_feet_pos, last], 1., BLACK)
+                                    .unwrap()
+                                    .build(ctx)
+                                    .unwrap();
+                                graphics::draw(ctx, &mesh, DrawParam::default())?;
+                                graphics::draw(
+                                    ctx,
+                                    &self.assets.tex.cross,
+                                    DrawParam {
+                                        dest: last.into(),
+                                        scale: [8., 8. / ROOT_OF_2].into(),
+                                        ..Default::default()
+                                    },
+                                )?;
+                            }
                         }
-                    };
-                    graphics::draw(
-                        ctx,
-                        &self.assets.tex.unit_line,
-                        DrawParam {
-                            color,
-                            dest: nocked.start.into(),
-                            rotation: dif_rotation_angle,
-                            scale: [linelen, 1.].into(),
-                            ..Default::default()
-                        },
-                    )?;
-                }
+                        (WHITE, n)
+                    }
+                };
+                graphics::draw(
+                    ctx,
+                    &self.assets.tex.unit_line,
+                    DrawParam {
+                        color,
+                        dest: nocked.start.into(),
+                        rotation: dif_rotation_angle,
+                        scale: [linelen, 1.].into(),
+                        ..Default::default()
+                    },
+                )?;
             }
             _ => {
                 let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
