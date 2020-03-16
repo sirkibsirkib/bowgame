@@ -1,17 +1,10 @@
 use super::*;
 
 pub const BROWN: Color = Color { r: 0.5, g: 0.2, b: 0.2, a: 1. };
-pub const GREEN: Color = Color { r: 0.1, g: 0.4, b: 0.1, a: 1. };
+
 pub const RED: Color = Color { r: 1., g: 0., b: 0., a: 1. };
+pub const GREEN: Color = Color { r: 0.1, g: 0.4, b: 0.1, a: 1. };
 pub const BLUE: Color = Color { r: 0., g: 0., b: 1., a: 1. };
-pub const FLETCH_THICKNESS: f32 = 0.07;
-pub const FLETCH_LENGTH: f32 = 0.2;
-pub const FLETCH_INDENT: f32 = 0.04;
-pub const HEAD_THICKNESS: f32 = 0.05;
-pub const HEAD_LENGTH: f32 = 0.13;
-pub const SHAFT_THICKNESS: f32 = 0.017;
-pub const LIMB_WIDTH: f32 = 70.0;
-pub const LIMB_DEPTH: f32 = 35.0;
 pub const WALK_SPEED: f32 = 4.0;
 
 impl core::ops::Index<Tautness> for AudioAssets {
@@ -28,6 +21,23 @@ impl core::ops::IndexMut<Tautness> for AudioAssets {
 fn linear(mut image: Image) -> Image {
     image.set_filter(FilterMode::Nearest);
     image
+}
+pub(crate) fn starting_doodads(rng: &mut SmallRng) -> Vec<Doodad> {
+    impl Distribution<DoodadKind> for Standard {
+        fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> DoodadKind {
+            match rng.gen_range(0, 3) {
+                0 => DoodadKind::Shrub,
+                1 => DoodadKind::Bush,
+                _ => DoodadKind::Pebbles,
+            }
+        }
+    }
+    let num = rng.gen_range(50, 80);
+    let f = move || Doodad {
+        kind: rng.gen(),
+        pos: Pt3::new(rng.gen_range(-500., 500.), rng.gen_range(-500., 500.), 0.),
+    };
+    std::iter::repeat_with(f).take(num).collect()
 }
 impl Assets {
     pub fn new(ctx: &mut Context) -> Self {
@@ -49,27 +59,6 @@ impl Assets {
                 .build(ctx)
                 .unwrap(),
             arrow_batch: SpriteBatch::new(Image::new(ctx, "/arrow.png").unwrap()),
-            limb: MeshBuilder::new()
-                .polygon(
-                    DrawMode::fill(),
-                    &[
-                        [1.0, 1.0],
-                        [0.89, 0.8],
-                        [0.64, 0.6],
-                        [0.4, 0.4],
-                        [0.1, 0.2],
-                        [0.0, 0.0],
-                        [0.1, 0.0],
-                        [0.2, 0.2],
-                        [0.5, 0.4],
-                        [0.71, 0.6],
-                        [0.94, 0.8],
-                    ],
-                    WHITE,
-                )
-                .unwrap()
-                .build(ctx)
-                .unwrap(),
         };
         let audio = AudioAssets {
             taut: [
