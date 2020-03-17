@@ -29,7 +29,7 @@ const MAX_VEL: f32 = 35.;
 
 const ROOT_OF_2: f32 = 1.41421356;
 const WIN_DIMS: [f32; 2] = [800., 600.];
-const ARM_Z: f32 = -29.;
+const ARM_Z: f32 = -42.;
 const BADDIE_SPEED: f32 = 0.5;
 
 const SCREEN_TRANS_V2: [f32; 2] = [
@@ -519,9 +519,11 @@ impl EventHandler for MyGame {
             let proj_scalar = pull_v.dot(&duderel) / pull_v.dot(&pull_v);
             let proj_v = pull_v * proj_scalar;
             let perp_v = proj_v - duderel;
-            let z = -(perp_v.norm() + 20.) * 0.07;
+            let z = perp_v.norm() * -0.07;
             *shot_vel = self.camera.vec_2_to_3(pull_v);
             shot_vel[2] = z;
+
+            // TODO audio must be back in!
 
             // let new_pull_level = match diff.coords.norm_squared() {
             //     x if x < 30.0f32.sqr() => PullLevel::None,
@@ -545,7 +547,7 @@ impl EventHandler for MyGame {
         graphics::clear(ctx, GREEN);
         // the dude
         const DUDE_SCALE: [f32; 2] = [2.; 2];
-        const ARROW_SCALE: f32 = 1.6;
+        const ARROW_SCALE: f32 = 1.7;
         let right_facing = self.body_facing();
         let facing_dude_scale = [
             //
@@ -706,8 +708,7 @@ impl EventHandler for MyGame {
                     false => (RED, n),
                     true => {
                         if self.aim_assist >= 1 {
-                            let aim_e_v3 =
-                                self.dude.pos + Vec3::from(TO_ARMS) + nocked.shot_vel * 7.;
+                            let aim_e_v3 = self.dude.pos + nocked.shot_vel * 7.;
                             let aim_e_v2 = self.camera.pt_3_to_2(aim_e_v3);
                             let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
                             graphics::draw(
