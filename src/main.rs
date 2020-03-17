@@ -11,6 +11,16 @@ use ggez::{
     *,
 };
 
+mod config {
+    use ggez::input::keyboard::KeyCode::{self, *};
+    pub(crate) const UP: KeyCode = W;
+    pub(crate) const DO: KeyCode = S;
+    pub(crate) const LE: KeyCode = A;
+    pub(crate) const RI: KeyCode = D;
+    pub(crate) const CL: KeyCode = E;
+    pub(crate) const AN: KeyCode = Q;
+}
+
 use rand::{
     distributions::{Distribution, Standard},
     rngs::SmallRng,
@@ -123,6 +133,7 @@ struct MyGame {
 struct Nocked {
     start: Pt2,
     shot_vel: Vec3,
+    last_pull_level: PullLevel,
 }
 struct Baddie {
     entity: Entity,
@@ -237,12 +248,12 @@ impl PullLevel {
     fn from_shot_vel(shot_vel: Vec3) -> Self {
         const DIFF: f32 = MAX_VEL - MIN_VEL;
         use PullLevel::*;
-        match shot_vel.norm() {
-            x if x < MIN_VEL => TooLittle,
-            x if x < (MIN_VEL + DIFF * 0.25) => Low,
-            x if x < (MIN_VEL + DIFF * 0.50) => Med,
-            x if x < (MIN_VEL + DIFF * 0.75) => High,
-            x if x < (MIN_VEL + DIFF * 1.00) => Max,
+        match shot_vel.norm_squared() {
+            x if x < MIN_VEL.sqr() => TooLittle,
+            x if x < (MIN_VEL + DIFF * 0.25).sqr() => Low,
+            x if x < (MIN_VEL + DIFF * 0.50).sqr() => Med,
+            x if x < (MIN_VEL + DIFF * 0.75).sqr() => High,
+            x if x < (MIN_VEL + DIFF * 1.00).sqr() => Max,
             _ => TooMuch,
         }
     }
@@ -365,13 +376,13 @@ impl EventHandler for MyGame {
         _repeat: bool,
     ) {
         match keycode {
-            KeyCode::W => self.pressing.down = Some(false),
-            KeyCode::A => self.pressing.right = Some(false),
-            KeyCode::Q => self.pressing.clockwise = Some(false),
+            config::UP => self.pressing.down = Some(false),
+            config::LE => self.pressing.right = Some(false),
+            config::AN => self.pressing.clockwise = Some(false),
             //
-            KeyCode::S => self.pressing.down = Some(true),
-            KeyCode::D => self.pressing.right = Some(true),
-            KeyCode::E => self.pressing.clockwise = Some(true),
+            config::DO => self.pressing.down = Some(true),
+            config::RI => self.pressing.right = Some(true),
+            config::CL => self.pressing.clockwise = Some(true),
             KeyCode::Escape => ggez::event::quit(ctx),
             KeyCode::Space => self.aim_assist = (self.aim_assist + 1) % 3,
             _ => return,
@@ -380,13 +391,13 @@ impl EventHandler for MyGame {
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         match keycode {
-            KeyCode::W if self.pressing.down == Some(false) => self.pressing.down = None,
-            KeyCode::A if self.pressing.right == Some(false) => self.pressing.right = None,
-            KeyCode::Q if self.pressing.clockwise == Some(false) => self.pressing.clockwise = None,
+            config::UP if self.pressing.down == Some(false) => self.pressing.down = None,
+            config::LE if self.pressing.right == Some(false) => self.pressing.right = None,
+            config::AN if self.pressing.clockwise == Some(false) => self.pressing.clockwise = None,
             //
-            KeyCode::S if self.pressing.down == Some(true) => self.pressing.down = None,
-            KeyCode::D if self.pressing.right == Some(true) => self.pressing.right = None,
-            KeyCode::E if self.pressing.clockwise == Some(true) => self.pressing.clockwise = None,
+            config::DO if self.pressing.down == Some(true) => self.pressing.down = None,
+            config::RI if self.pressing.right == Some(true) => self.pressing.right = None,
+            config::CL if self.pressing.clockwise == Some(true) => self.pressing.clockwise = None,
             _ => return,
         }
         self.recalculate_dude_vel();
@@ -467,7 +478,11 @@ impl EventHandler for MyGame {
         match button {
             MouseButton::Left => {
                 let start = [x, y].into();
-                self.nocked = Some(Nocked { start, shot_vel: [0.; 3].into() });
+                self.nocked = Some(Nocked {
+                    start,
+                    shot_vel: [0.; 3].into(),
+                    last_pull_level: PullLevel::TooLittle,
+                });
             }
             MouseButton::Right => {
                 let anchor_pt: Pt2 = [x, y].into();
@@ -512,7 +527,7 @@ impl EventHandler for MyGame {
             return;
         }
         self.last_mouse_at = mouse_at;
-        if let Some(Nocked { start, shot_vel }) = &mut self.nocked {
+        if let Some(Nocked { start, shot_vel, last_pull_level }) = &mut self.nocked {
             let line_v = start.coords - mouse_at.coords;
             let pull_v = line_v * 0.11;
             let duderel = self.camera.pt_3_to_2(self.dude.pos).coords - mouse_at.coords;
@@ -523,20 +538,25 @@ impl EventHandler for MyGame {
             *shot_vel = self.camera.vec_2_to_3(pull_v);
             shot_vel[2] = z;
 
-            // TODO audio must be back in!
-
-            // let new_pull_level = match diff.coords.norm_squared() {
-            //     x if x < 30.0f32.sqr() => PullLevel::None,
-            //     x if x < 60.0f32.sqr() => PullLevel::Low,
-            //     x if x < 110.0f32.sqr() => PullLevel::Med,
-            //     x if x < 180.0f32.sqr() => PullLevel::High,
-            //     _ => PullLevel::Max,
-            // };
-            // if *pull_level != new_pull_level {
-            //     self.assets.audio[*pull_level].stop();
-            //     self.assets.audio[new_pull_level].play().unwrap();
-            //     *pull_level = new_pull_level;
-            // }
+            let new_pull_level = PullLevel::from_shot_vel(*shot_vel);
+            if new_pull_level != *last_pull_level {
+                fn pl_to_audio_index(pl: PullLevel) -> Option<usize> {
+                    Some(match pl {
+                        PullLevel::TooMuch | PullLevel::TooLittle => return None,
+                        PullLevel::Low => 0,
+                        PullLevel::Med => 1,
+                        PullLevel::High => 2,
+                        PullLevel::Max => 3,
+                    })
+                }
+                if let Some(index) = pl_to_audio_index(*last_pull_level) {
+                    self.assets.audio.taut[index].stop();
+                }
+                if let Some(index) = pl_to_audio_index(new_pull_level) {
+                    self.assets.audio.taut[index].play().unwrap();
+                }
+                *last_pull_level = new_pull_level;
+            }
         }
         self.recalculate_rotation_wrt(mouse_at);
     }
