@@ -7,15 +7,17 @@ pub const GREEN: Color = Color { r: 0.1, g: 0.4, b: 0.1, a: 1. };
 pub const BLUE: Color = Color { r: 0., g: 0., b: 1., a: 1. };
 pub const WALK_SPEED: f32 = 4.0;
 
-impl core::ops::Index<Tautness> for AudioAssets {
+impl core::ops::Index<PullLevel> for AudioAssets {
     type Output = Source;
-    fn index(&self, t: Tautness) -> &Self::Output {
-        &self.taut[t.level()]
+    fn index(&self, t: PullLevel) -> &Self::Output {
+        // &self.taut[t.level()]
+        &self.taut[0]
     }
 }
-impl core::ops::IndexMut<Tautness> for AudioAssets {
-    fn index_mut(&mut self, t: Tautness) -> &mut Self::Output {
-        &mut self.taut[t.level()]
+impl core::ops::IndexMut<PullLevel> for AudioAssets {
+    fn index_mut(&mut self, t: PullLevel) -> &mut Self::Output {
+        // &mut self.taut[t.level()]
+        &mut self.taut[0]
     }
 }
 fn linear(mut image: Image) -> Image {
@@ -62,7 +64,6 @@ impl Assets {
         };
         let audio = AudioAssets {
             taut: [
-                ggez::audio::Source::new(ctx, "/taut1.wav").unwrap(),
                 ggez::audio::Source::new(ctx, "/taut1.wav").unwrap(),
                 ggez::audio::Source::new(ctx, "/taut2.wav").unwrap(),
                 ggez::audio::Source::new(ctx, "/taut3.wav").unwrap(),

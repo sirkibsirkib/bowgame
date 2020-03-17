@@ -21,7 +21,7 @@ impl<'vec, 'entry, T> Entry<'vec, 'entry, T> {
 // conceptually, could be alternatively achieved by either:
 // 1. always being in state 2, where Entry gets the old copy of next_index (so its no longer off-by-one for Entry)
 // 2. incrementing next_index whenever Entry is DROPPED. (drops are not guaranteed => unsafe!)
-pub struct Draining<'vec, T> {
+pub(crate) struct Draining<'vec, T> {
     next_index: usize, // always off by one while Draining is borrowed by an Entry
     vec: &'vec mut Vec<T>,
 }
@@ -39,3 +39,10 @@ impl<'vec, T> Draining<'vec, T> {
         }
     }
 }
+
+pub(crate) trait Squarable: core::ops::Mul + Copy {
+    fn sqr(self) -> <Self as core::ops::Mul>::Output {
+        self * self
+    }
+}
+impl<T: core::ops::Mul + Copy> Squarable for T {}
