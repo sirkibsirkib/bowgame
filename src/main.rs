@@ -10,6 +10,7 @@ use ggez::{
     nalgebra::{self as na, Rotation2, Rotation3, Transform3, Translation3},
     *,
 };
+use std::net::SocketAddr;
 
 mod config {
     use ggez::input::keyboard::KeyCode::{self, *};
@@ -61,13 +62,24 @@ mod helper;
 use helper::*;
 
 fn main() {
+    // let mut args = std::env::args();
+    // args.next().unwrap();
+    // let addr: SocketAddr = args.next().unwrap().parse().unwrap();
+    // println!("addr {:?}", addr);
+    // let (n, am_server) = match args.next().unwrap().as_ref() {
+    //     "S" => (std::net::TcpListener::bind(addr).unwrap().accept().unwrap().0, true),
+    //     "C" => (std::net::TcpStream::connect(addr).unwrap(), false),
+    //     _ => panic!("NOT OK"),
+    // };
+    // n.set_nonblocking(true).unwrap();
+    let am_server = true;
     // Make a Context.
     let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
         .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
         .build()
         .unwrap();
     ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
-    let mut my_game = MyGame::new(&mut ctx);
+    let mut my_game = MyGame::new(&mut ctx, am_server);
     event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
 }
 
@@ -109,30 +121,40 @@ struct Camera {
     world_pos: Pt3,
     world_rot: f32,
 }
-struct RclickAnchor {
+struct RclickState {
     anchor_pt: Pt2,
     anchor_angle: f32,
 }
-struct MyGame {
-    faced_right_most_recently: bool,
-    aim_assist: u8,
+struct Ui {
     camera: Camera,
-    ticks: usize,
+    lclick_state: Option<LclickState>,
+    rclick_state: Option<RclickState>,
     pressing: Pressing,
+    aim_assist: u8,
+    last_mouse_at: Pt2,
+}
+struct Dude {
+    entity: Entity,
+    shot_vel: Option<Vec3>,
+}
+struct MyGame {
+    am_server: bool,
+    faced_right_most_recently: bool,
+    ticks: usize,
     baddies: Vec<Baddie>,
-    dude: Entity,
+    dude: Dude,
     arrows: Vec<Entity>,
     stuck_arrows: Vec<Entity>,
-    nocked: Option<Nocked>,
-    rclick_anchor: Option<RclickAnchor>,
+    // nocked: Option<LclickState>,
+    // rclick_anchor: Option<RclickState>,
     assets: Assets,
     doodads: Vec<Doodad>,
-    last_mouse_at: Pt2,
     rng: SmallRng,
+    ui: Ui,
 }
-struct Nocked {
+struct LclickState {
     start: Pt2,
-    shot_vel: Vec3,
+    // shot_vel: Vec3,
     last_pull_level: PullLevel,
 }
 struct Baddie {
@@ -261,37 +283,41 @@ impl PullLevel {
 
 impl MyGame {
     fn body_facing(&self) -> bool {
-        self.nocked
-            .as_ref()
-            .map(|nocked| self.camera.vec_3_to_2(nocked.shot_vel)[0] > 0.)
-            .or(self.pressing.right)
+        self.dude
+            .shot_vel
+            .map(|v| self.ui.camera.vec_3_to_2(v)[0] > 0.)
+            .or(self.ui.pressing.right)
             .unwrap_or(self.faced_right_most_recently)
     }
-    fn new(ctx: &mut Context) -> Self {
+    fn new(ctx: &mut Context, am_server: bool) -> Self {
         let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
-        let dude = Entity { pos: [0.; 3].into(), vel: [0.; 3].into() };
+        let dude =
+            Dude { shot_vel: None, entity: Entity { pos: [0.; 3].into(), vel: [0.; 3].into() } };
         MyGame {
+            ui: Ui {
+                camera: Camera::default(),
+                last_mouse_at: [0.; 2].into(),
+                rclick_state: None,
+                lclick_state: None,
+                pressing: Default::default(),
+                aim_assist: 0,
+            },
             faced_right_most_recently: true,
             baddies: (0..3)
                 .map(|_| Baddie {
                     stuck_arrows: vec![],
                     health: 1.0,
                     entity: Entity {
-                        pos: Self::rand_baddie_spot(&mut rng, dude.pos),
+                        pos: Self::rand_baddie_spot(&mut rng, dude.entity.pos),
                         vel: [0.; 3].into(),
                     },
                 })
                 .collect(),
-            camera: Camera::default(),
-            aim_assist: 0,
+            am_server,
             ticks: 0,
             dude,
-            last_mouse_at: [0.; 2].into(),
-            rclick_anchor: None,
-            pressing: Pressing::default(),
             arrows: vec![],
             stuck_arrows: vec![],
-            nocked: None,
             assets: Assets::new(ctx),
             doodads: starting_doodads(&mut rng),
             rng,
@@ -300,46 +326,46 @@ impl MyGame {
     fn recalculate_dude_vel(&mut self) {
         let mut speed = WALK_SPEED;
 
-        // speed decreased if aiming
-        if self.nocked.is_some() {
-            speed *= 0.7;
-            let facing = self.body_facing();
-            if let Some(right) = self.pressing.right {
-                // speed decreased if walking backwards
-                if facing != right {
-                    speed *= 0.5;
-                }
-            }
-        }
+        // // speed decreased if aiming
+        // if self.dude.shot_vel.is_some() {
+        //     speed *= 0.7;
+        //     let facing = self.body_facing();
+        //     if let Some(right) = self.ui.pressing.right {
+        //         // speed decreased if walking backwards
+        //         if facing != right {
+        //             speed *= 0.5;
+        //         }
+        //     }
+        // }
         // h and v speed decreased if moving horizontally & vertically
-        if self.pressing.down.is_some() && self.pressing.right.is_some() {
+        if self.ui.pressing.down.is_some() && self.ui.pressing.right.is_some() {
             speed /= ROOT_OF_2
         };
 
         let vel: Vec2 = [
-            match self.pressing.right {
+            match self.ui.pressing.right {
                 Some(true) => speed,
                 Some(false) => -speed,
                 _ => 0.,
             },
-            match self.pressing.down {
+            match self.ui.pressing.down {
                 Some(true) => speed,
                 Some(false) => -speed,
                 _ => 0.,
             },
         ]
         .into();
-        self.dude.vel = self.camera.vec_2_to_3(vel);
+        self.dude.entity.vel = self.ui.camera.vec_2_to_3(vel);
     }
     fn recalculate_rotation_wrt(&mut self, wrt: Pt2) {
-        if let Some(RclickAnchor { anchor_angle, anchor_pt }) = &mut self.rclick_anchor {
-            let diff_is: Pt2 = wrt - self.camera.pt_3_to_2(self.dude.pos).coords;
+        if let Some(RclickState { anchor_angle, anchor_pt }) = &mut self.ui.rclick_state {
+            let diff_is: Pt2 = wrt - self.ui.camera.pt_3_to_2(self.dude.entity.pos).coords;
             let angle_is = Camera::rot_of_xy(diff_is.coords);
 
             // ggez::input::mouse::set_position(ctx, anchor_pt).unwrap();
             let axisangle = na::Vector3::z() * (angle_is - *anchor_angle);
             let rot = Rotation3::new(axisangle);
-            let origin = self.dude.pos.coords;
+            let origin = self.dude.entity.pos.coords;
             let pos_recalc = move |pos| (rot * (pos - origin)) + origin;
             for a in self.arrows.iter_mut().chain(self.stuck_arrows.iter_mut()) {
                 a.pos = pos_recalc(a.pos);
@@ -376,28 +402,32 @@ impl EventHandler for MyGame {
         _repeat: bool,
     ) {
         match keycode {
-            config::UP => self.pressing.down = Some(false),
-            config::LE => self.pressing.right = Some(false),
-            config::AN => self.pressing.clockwise = Some(false),
+            config::UP => self.ui.pressing.down = Some(false),
+            config::LE => self.ui.pressing.right = Some(false),
+            config::AN => self.ui.pressing.clockwise = Some(false),
             //
-            config::DO => self.pressing.down = Some(true),
-            config::RI => self.pressing.right = Some(true),
-            config::CL => self.pressing.clockwise = Some(true),
+            config::DO => self.ui.pressing.down = Some(true),
+            config::RI => self.ui.pressing.right = Some(true),
+            config::CL => self.ui.pressing.clockwise = Some(true),
             KeyCode::Escape => ggez::event::quit(ctx),
-            KeyCode::Space => self.aim_assist = (self.aim_assist + 1) % 3,
+            KeyCode::Space => self.ui.aim_assist = (self.ui.aim_assist + 1) % 3,
             _ => return,
         }
         self.recalculate_dude_vel();
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         match keycode {
-            config::UP if self.pressing.down == Some(false) => self.pressing.down = None,
-            config::LE if self.pressing.right == Some(false) => self.pressing.right = None,
-            config::AN if self.pressing.clockwise == Some(false) => self.pressing.clockwise = None,
+            config::UP if self.ui.pressing.down == Some(false) => self.ui.pressing.down = None,
+            config::LE if self.ui.pressing.right == Some(false) => self.ui.pressing.right = None,
+            config::AN if self.ui.pressing.clockwise == Some(false) => {
+                self.ui.pressing.clockwise = None
+            }
             //
-            config::DO if self.pressing.down == Some(true) => self.pressing.down = None,
-            config::RI if self.pressing.right == Some(true) => self.pressing.right = None,
-            config::CL if self.pressing.clockwise == Some(true) => self.pressing.clockwise = None,
+            config::DO if self.ui.pressing.down == Some(true) => self.ui.pressing.down = None,
+            config::RI if self.ui.pressing.right == Some(true) => self.ui.pressing.right = None,
+            config::CL if self.ui.pressing.clockwise == Some(true) => {
+                self.ui.pressing.clockwise = None
+            }
             _ => return,
         }
         self.recalculate_dude_vel();
@@ -408,13 +438,13 @@ impl EventHandler for MyGame {
         for b in &mut self.baddies {
             b.entity.pos += b.entity.vel;
         }
-        self.dude.pos += self.dude.vel;
-        self.camera.world_rot += match self.pressing.clockwise {
+        self.dude.entity.pos += self.dude.entity.vel;
+        self.ui.camera.world_rot += match self.ui.pressing.clockwise {
             None => 0.,
             Some(true) => -0.05,
             Some(false) => 0.05,
         };
-        self.camera.world_pos = self.dude.pos;
+        self.ui.camera.world_pos = self.dude.entity.pos;
         'entry_loop: while let Some(mut entry) = draining.next() {
             let arrow: &mut Entity = entry.get_mut();
             arrow.update();
@@ -430,7 +460,7 @@ impl EventHandler for MyGame {
                     if b.health <= 0. {
                         // "killed"
                         b.health = 1.;
-                        b.entity.pos = Self::rand_baddie_spot(&mut self.rng, self.dude.pos);
+                        b.entity.pos = Self::rand_baddie_spot(&mut self.rng, self.dude.entity.pos);
                         b.stuck_arrows.clear();
                     } else {
                         b.stuck_arrows.push(arrow);
@@ -456,9 +486,9 @@ impl EventHandler for MyGame {
                 self.stuck_arrows.push(entry.take())
             }
         }
-        match self.rclick_anchor {
-            Some(RclickAnchor { anchor_pt, .. })
-                if self.pressing.down.is_some() || self.pressing.right.is_some() =>
+        match self.ui.rclick_state {
+            Some(RclickState { anchor_pt, .. })
+                if self.ui.pressing.down.is_some() || self.ui.pressing.right.is_some() =>
             {
                 self.recalculate_rotation_wrt(anchor_pt);
             }
@@ -468,7 +498,7 @@ impl EventHandler for MyGame {
         if self.ticks % 32 == 0 {
             // recompute baddie trajectory
             for b in &mut self.baddies {
-                b.entity.vel = (self.dude.pos - b.entity.pos).normalize() * BADDIE_SPEED;
+                b.entity.vel = (self.dude.entity.pos - b.entity.pos).normalize() * BADDIE_SPEED;
             }
         }
         Ok(())
@@ -478,16 +508,15 @@ impl EventHandler for MyGame {
         match button {
             MouseButton::Left => {
                 let start = [x, y].into();
-                self.nocked = Some(Nocked {
-                    start,
-                    shot_vel: [0.; 3].into(),
-                    last_pull_level: PullLevel::TooLittle,
-                });
+                self.ui.lclick_state =
+                    Some(LclickState { start, last_pull_level: PullLevel::TooLittle });
+                self.dude.shot_vel = Some(Vec3::new(0., 0., 0.));
             }
             MouseButton::Right => {
                 let anchor_pt: Pt2 = [x, y].into();
-                let anchor_diff: Pt2 = anchor_pt - self.camera.pt_3_to_2(self.dude.pos).coords;
-                self.rclick_anchor = Some(RclickAnchor {
+                let anchor_diff: Pt2 =
+                    anchor_pt - self.ui.camera.pt_3_to_2(self.dude.entity.pos).coords;
+                self.ui.rclick_state = Some(RclickState {
                     anchor_pt,
                     anchor_angle: Camera::rot_of_xy(anchor_diff.coords),
                 })
@@ -500,12 +529,12 @@ impl EventHandler for MyGame {
         match button {
             MouseButton::Left => {
                 if let Some(arrow) =
-                    self.nocked.take().and_then(|nocked| match nocked.shot_vel.norm_squared() {
+                    self.dude.shot_vel.take().and_then(|shot_vel| match shot_vel.norm_squared() {
                         x if x < MIN_VEL.sqr() => None,
                         x if x > MAX_VEL.sqr() => None,
                         _ => Some(Entity {
-                            pos: self.dude.pos + Vec3::from(TO_ARMS),
-                            vel: nocked.shot_vel,
+                            pos: self.dude.entity.pos + Vec3::from(TO_ARMS),
+                            vel: shot_vel,
                         }),
                     })
                 {
@@ -516,26 +545,28 @@ impl EventHandler for MyGame {
                     self.arrows.push(arrow);
                 }
             }
-            MouseButton::Right => self.rclick_anchor = None,
+            MouseButton::Right => self.ui.rclick_state = None,
             _ => {}
         }
     }
 
     fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32, _dx: f32, _dy: f32) {
         let mouse_at: Pt2 = [x, y].into();
-        if self.last_mouse_at == mouse_at {
+        if self.ui.last_mouse_at == mouse_at {
             return;
         }
-        self.last_mouse_at = mouse_at;
-        if let Some(Nocked { start, shot_vel, last_pull_level }) = &mut self.nocked {
+        self.ui.last_mouse_at = mouse_at;
+        if let (Some(LclickState { start, last_pull_level }), Some(shot_vel)) =
+            (&mut self.ui.lclick_state, &mut self.dude.shot_vel)
+        {
             let line_v = start.coords - mouse_at.coords;
             let pull_v = line_v * 0.11;
-            let duderel = self.camera.pt_3_to_2(self.dude.pos).coords - mouse_at.coords;
+            let duderel = self.ui.camera.pt_3_to_2(self.dude.entity.pos).coords - mouse_at.coords;
             let proj_scalar = pull_v.dot(&duderel) / pull_v.dot(&pull_v);
             let proj_v = pull_v * proj_scalar;
             let perp_v = proj_v - duderel;
             let z = perp_v.norm() * -0.07;
-            *shot_vel = self.camera.vec_2_to_3(pull_v);
+            *shot_vel = self.ui.camera.vec_2_to_3(pull_v);
             shot_vel[2] = z;
 
             let new_pull_level = PullLevel::from_shot_vel(*shot_vel);
@@ -574,8 +605,9 @@ impl EventHandler for MyGame {
             DUDE_SCALE[0] * if right_facing { 1. } else { -1. },
             DUDE_SCALE[1],
         ];
-        let dude_arm_pos = self.camera.pt_3_to_2(self.dude.pos + Vec3::new(0., 0., ARM_Z));
-        let dude_feet_pos = self.camera.pt_3_to_2(self.dude.pos);
+        let dude_arm_pos =
+            self.ui.camera.pt_3_to_2(self.dude.entity.pos + Vec3::new(0., 0., ARM_Z));
+        let dude_feet_pos = self.ui.camera.pt_3_to_2(self.dude.entity.pos);
         let dude_param = DrawParam {
             src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
             dest: dude_arm_pos.into(),
@@ -590,7 +622,7 @@ impl EventHandler for MyGame {
         for doodad in self.doodads.iter() {
             self.assets.tex.doodads.add(DrawParam {
                 src: doodad.kind.rect(),
-                dest: self.camera.pt_3_to_2(doodad.pos).into(),
+                dest: self.ui.camera.pt_3_to_2(doodad.pos).into(),
                 offset: [0.5, 0.5].into(),
                 ..Default::default()
             });
@@ -627,7 +659,7 @@ impl EventHandler for MyGame {
         for b in &self.baddies {
             self.assets.tex.doodads.add(DrawParam {
                 src: DoodadKind::Rock.rect(),
-                dest: self.camera.pt_3_to_2(b.entity.pos).into(),
+                dest: self.ui.camera.pt_3_to_2(b.entity.pos).into(),
                 color: Color { r: 1.0, g: b.health, b: b.health, a: 1. },
                 scale: [3.1, 5.0].into(),
                 offset: [0.5, 0.75].into(),
@@ -636,18 +668,18 @@ impl EventHandler for MyGame {
             for arrow in &b.stuck_arrows {
                 let mut a: Entity = Entity::clone(arrow);
                 a.pos += b.entity.pos.coords;
-                arrow_draw(0.25, &a, &mut self.assets.tex.arrow_batch, &self.camera);
+                arrow_draw(0.25, &a, &mut self.assets.tex.arrow_batch, &self.ui.camera);
             }
         }
 
         for arrow in self.arrows.iter() {
-            arrow_draw(0.00, arrow, &mut self.assets.tex.arrow_batch, &self.camera);
+            arrow_draw(0.00, arrow, &mut self.assets.tex.arrow_batch, &self.ui.camera);
         }
         for arrow in self.stuck_arrows.iter() {
-            arrow_draw(0.25, arrow, &mut self.assets.tex.arrow_batch, &self.camera);
+            arrow_draw(0.25, arrow, &mut self.assets.tex.arrow_batch, &self.ui.camera);
         }
         let main_src = {
-            let x = if self.pressing.down.is_some() || self.pressing.right.is_some() {
+            let x = if self.ui.pressing.down.is_some() || self.ui.pressing.right.is_some() {
                 const FRAME_TICKS: usize = 10;
                 match self.ticks % (FRAME_TICKS * 6) {
                     x if x < FRAME_TICKS * 1 => 0.0,
@@ -663,14 +695,15 @@ impl EventHandler for MyGame {
             Rect { x, y: 0., h: 0.2, w: 0.2 }
         };
         let end: Pt2 = ggez::input::mouse::position(ctx).into();
-        match self.nocked.as_ref().map(|n| (n, PullLevel::from_shot_vel(n.shot_vel))) {
-            Some((nocked, pull_level)) => {
+        match (self.ui.lclick_state.as_ref(), self.dude.shot_vel) {
+            (Some(nocked), Some(shot_vel)) => {
+                let pull_level = PullLevel::from_shot_vel(shot_vel);
                 let line_v = end.coords - nocked.start.coords;
                 let dif_rotation = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &line_v);
                 let dif_rotation_angle = dif_rotation.angle();
 
                 let [aim_angle, arm_angle] = if pull_level.can_shoot() {
-                    let aim_angle = Camera::rot_of_xy(self.camera.vec_3_to_2(nocked.shot_vel));
+                    let aim_angle = Camera::rot_of_xy(self.ui.camera.vec_3_to_2(shot_vel));
                     [aim_angle, aim_angle + if right_facing { 0. } else { PI }]
                 } else {
                     [0.; 2]
@@ -711,10 +744,10 @@ impl EventHandler for MyGame {
                 )?;
 
                 // nocked arrow
-                let nock_at = self.dude.pos + Pt3::new(0., 0., ARM_Z).coords;
+                let nock_at = self.dude.entity.pos + Pt3::new(0., 0., ARM_Z).coords;
                 let p = DrawParam {
                     src: Rect { x: 0., y: 0., h: 0.25, w: 1. },
-                    dest: self.camera.pt_3_to_2(nock_at).into(),
+                    dest: self.ui.camera.pt_3_to_2(nock_at).into(),
                     color: WHITE,
                     scale: [ARROW_SCALE; 2].into(),
                     offset: [0., 0.5].into(),
@@ -727,9 +760,9 @@ impl EventHandler for MyGame {
                 let (color, linelen) = match pull_level.can_shoot() {
                     false => (RED, n),
                     true => {
-                        if self.aim_assist >= 1 {
-                            let aim_e_v3 = self.dude.pos + nocked.shot_vel * 7.;
-                            let aim_e_v2 = self.camera.pt_3_to_2(aim_e_v3);
+                        if self.ui.aim_assist >= 1 {
+                            let aim_e_v3 = self.dude.entity.pos + shot_vel * 7.;
+                            let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
                             let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
                             graphics::draw(
                                 ctx,
@@ -742,9 +775,9 @@ impl EventHandler for MyGame {
                                     ..dude_param
                                 },
                             )?;
-                            let aim_e_v3 = self.dude.pos
-                                + Vec3::new(nocked.shot_vel[0], nocked.shot_vel[1], 0.) * 7.;
-                            let aim_e_v2 = self.camera.pt_3_to_2(aim_e_v3);
+                            let aim_e_v3 =
+                                self.dude.entity.pos + Vec3::new(shot_vel[0], shot_vel[1], 0.) * 7.;
+                            let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
                             let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
                             graphics::draw(
                                 ctx,
@@ -758,10 +791,10 @@ impl EventHandler for MyGame {
                                     ..dude_param
                                 },
                             )?;
-                            if self.aim_assist >= 2 {
+                            if self.ui.aim_assist >= 2 {
                                 let mut arrow = Entity {
-                                    vel: nocked.shot_vel,
-                                    pos: self.dude.pos - Vec3::new(0., 0., 32.),
+                                    vel: shot_vel,
+                                    pos: self.dude.entity.pos - Vec3::new(0., 0., 32.),
                                 };
                                 while arrow.pos[2] < 0. {
                                     arrow.update();
@@ -771,7 +804,7 @@ impl EventHandler for MyGame {
                                     ctx,
                                     &self.assets.tex.cross,
                                     DrawParam {
-                                        dest: self.camera.pt_3_to_2(arrow.pos).into(),
+                                        dest: self.ui.camera.pt_3_to_2(arrow.pos).into(),
                                         scale: [8., 8. / ROOT_OF_2].into(),
                                         ..Default::default()
                                     },
