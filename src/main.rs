@@ -1,3 +1,4 @@
+use core::convert::TryInto;
 use core::f32::consts::PI;
 use ggez::{
     audio::{SoundSource, Source},
@@ -10,7 +11,6 @@ use ggez::{
     nalgebra::{self as na, Rotation2, Rotation3, Transform3, Translation3},
     *,
 };
-use std::net::SocketAddr;
 
 mod config {
     use ggez::input::keyboard::KeyCode::{self, *};
@@ -132,10 +132,33 @@ struct Ui {
     pressing: Pressing,
     aim_assist: u8,
     last_mouse_at: Pt2,
+    config: UiConfig,
 }
 struct Dude {
     entity: Entity,
     shot_vel: Option<Vec3>,
+}
+
+#[derive(serde_derive::Deserialize)]
+struct UiConfigSerde {
+    up: String,
+    down: String,
+    left: String,
+    right: String,
+    clockwise: String,
+    anticlockwise: String,
+    aim_assist: String,
+    quit: String,
+}
+struct UiConfig {
+    up: KeyCode,
+    down: KeyCode,
+    left: KeyCode,
+    right: KeyCode,
+    clockwise: KeyCode,
+    anticlockwise: KeyCode,
+    aim_assist: KeyCode,
+    quit: KeyCode,
 }
 struct MyGame {
     am_server: bool,
@@ -291,10 +314,21 @@ impl MyGame {
     }
     fn new(ctx: &mut Context, am_server: bool) -> Self {
         let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
+        let config = {
+            let s = std::fs::read_to_string("ui_config.toml").unwrap_or_else(|_| {
+                panic!(
+                    "Couldn't find `ui_config.toml` at current directory: {:?}",
+                    std::env::current_dir().ok()
+                )
+            });
+            let x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
+            x.try_into().expect("Failed to parse config toml!")
+        };
         let dude =
             Dude { shot_vel: None, entity: Entity { pos: [0.; 3].into(), vel: [0.; 3].into() } };
         MyGame {
             ui: Ui {
+                config,
                 camera: Camera::default(),
                 last_mouse_at: [0.; 2].into(),
                 rclick_state: None,
@@ -326,17 +360,17 @@ impl MyGame {
     fn recalculate_dude_vel(&mut self) {
         let mut speed = WALK_SPEED;
 
-        // // speed decreased if aiming
-        // if self.dude.shot_vel.is_some() {
-        //     speed *= 0.7;
-        //     let facing = self.body_facing();
-        //     if let Some(right) = self.ui.pressing.right {
-        //         // speed decreased if walking backwards
-        //         if facing != right {
-        //             speed *= 0.5;
-        //         }
-        //     }
-        // }
+        // speed decreased if aiming
+        if self.dude.shot_vel.is_some() {
+            speed *= 0.7;
+            let facing = self.body_facing();
+            if let Some(right) = self.ui.pressing.right {
+                // speed decreased if walking backwards
+                if facing != right {
+                    speed *= 0.5;
+                }
+            }
+        }
         // h and v speed decreased if moving horizontally & vertically
         if self.ui.pressing.down.is_some() && self.ui.pressing.right.is_some() {
             speed /= ROOT_OF_2
@@ -402,30 +436,40 @@ impl EventHandler for MyGame {
         _repeat: bool,
     ) {
         match keycode {
-            config::UP => self.ui.pressing.down = Some(false),
-            config::LE => self.ui.pressing.right = Some(false),
-            config::AN => self.ui.pressing.clockwise = Some(false),
+            x if x == self.ui.config.up => self.ui.pressing.down = Some(false),
+            x if x == self.ui.config.left => self.ui.pressing.right = Some(false),
+            x if x == self.ui.config.anticlockwise => self.ui.pressing.clockwise = Some(false),
             //
-            config::DO => self.ui.pressing.down = Some(true),
-            config::RI => self.ui.pressing.right = Some(true),
-            config::CL => self.ui.pressing.clockwise = Some(true),
-            KeyCode::Escape => ggez::event::quit(ctx),
-            KeyCode::Space => self.ui.aim_assist = (self.ui.aim_assist + 1) % 3,
+            x if x == self.ui.config.down => self.ui.pressing.down = Some(true),
+            x if x == self.ui.config.right => self.ui.pressing.right = Some(true),
+            x if x == self.ui.config.clockwise => self.ui.pressing.clockwise = Some(true),
+            x if x == self.ui.config.quit => ggez::event::quit(ctx),
+            x if x == self.ui.config.aim_assist => {
+                self.ui.aim_assist = (self.ui.aim_assist + 1) % 3
+            }
             _ => return,
         }
         self.recalculate_dude_vel();
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         match keycode {
-            config::UP if self.ui.pressing.down == Some(false) => self.ui.pressing.down = None,
-            config::LE if self.ui.pressing.right == Some(false) => self.ui.pressing.right = None,
-            config::AN if self.ui.pressing.clockwise == Some(false) => {
+            x if x == self.ui.config.up && self.ui.pressing.down == Some(false) => {
+                self.ui.pressing.down = None
+            }
+            x if x == self.ui.config.left && self.ui.pressing.right == Some(false) => {
+                self.ui.pressing.right = None
+            }
+            x if x == self.ui.config.anticlockwise && self.ui.pressing.clockwise == Some(false) => {
                 self.ui.pressing.clockwise = None
             }
             //
-            config::DO if self.ui.pressing.down == Some(true) => self.ui.pressing.down = None,
-            config::RI if self.ui.pressing.right == Some(true) => self.ui.pressing.right = None,
-            config::CL if self.ui.pressing.clockwise == Some(true) => {
+            x if x == self.ui.config.down && self.ui.pressing.down == Some(true) => {
+                self.ui.pressing.down = None
+            }
+            x if x == self.ui.config.right && self.ui.pressing.right == Some(true) => {
+                self.ui.pressing.right = None
+            }
+            x if x == self.ui.config.clockwise && self.ui.pressing.clockwise == Some(true) => {
                 self.ui.pressing.clockwise = None
             }
             _ => return,
@@ -435,10 +479,14 @@ impl EventHandler for MyGame {
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
         let mut draining = Draining::new(&mut self.arrows);
-        for b in &mut self.baddies {
-            b.entity.pos += b.entity.vel;
+        for e in self
+            .baddies
+            .iter_mut()
+            .map(|b| &mut b.entity)
+            .chain(std::iter::once(&mut self.dude.entity))
+        {
+            e.pos += e.vel;
         }
-        self.dude.entity.pos += self.dude.entity.vel;
         self.ui.camera.world_rot += match self.ui.pressing.clockwise {
             None => 0.,
             Some(true) => -0.05,

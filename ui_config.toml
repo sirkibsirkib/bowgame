@@ -1,0 +1,8 @@
+up = "W"
+left = "A"
+down = "S"
+right = "D"
+clockwise = "E"
+anticlockwise = "Q"
+aim_assist = "Space"
+quit = "Escape"
