@@ -11,17 +11,6 @@ use ggez::{
     nalgebra::{self as na, Rotation2, Rotation3, Transform3, Translation3},
     *,
 };
-
-mod config {
-    use ggez::input::keyboard::KeyCode::{self, *};
-    pub(crate) const UP: KeyCode = W;
-    pub(crate) const DO: KeyCode = S;
-    pub(crate) const LE: KeyCode = A;
-    pub(crate) const RI: KeyCode = D;
-    pub(crate) const CL: KeyCode = E;
-    pub(crate) const AN: KeyCode = Q;
-}
-
 use rand::{
     distributions::{Distribution, Standard},
     rngs::SmallRng,
@@ -37,11 +26,10 @@ struct Pressing {
 
 const MIN_VEL: f32 = 9.;
 const MAX_VEL: f32 = 35.;
-
 const ROOT_OF_2: f32 = 1.41421356;
 const WIN_DIMS: [f32; 2] = [800., 600.];
-const ARM_Z: f32 = -42.;
 const BADDIE_SPEED: f32 = 0.5;
+const NUM_BADDIES: usize = 4;
 
 const SCREEN_TRANS_V2: [f32; 2] = [
     //
@@ -50,8 +38,8 @@ const SCREEN_TRANS_V2: [f32; 2] = [
 ];
 const SCREEN_TRANS_V3: [f32; 3] = [
     //
-    WIN_DIMS[0] * 0.3,
-    WIN_DIMS[1] * ROOT_OF_2 * 0.7,
+    SCREEN_TRANS_V2[0],
+    SCREEN_TRANS_V2[1] * ROOT_OF_2,
     0.,
 ];
 const TO_ARMS: [f32; 3] = [0., 0., -32.];
@@ -178,6 +166,7 @@ struct LclickState {
     last_pull_level: PullLevel,
 }
 struct Baddie {
+    target_archer_index: usize,
     entity: Entity,
     stuck_arrows: Vec<Entity>,
     health: f32,
@@ -376,14 +365,16 @@ impl MyGame {
             aim_assist: 0,
         };
         MyGame {
-            baddies: (0..3)
-                .map(|_| Baddie {
-                    stuck_arrows: vec![],
-                    health: 1.0,
-                    entity: Entity {
-                        pos: Self::rand_baddie_spot(&mut rng, &archers[ui.controlling], &archers),
-                        vel: [0.; 3].into(),
-                    },
+            baddies: (0..NUM_BADDIES)
+                .map(|_| {
+                    let mut b = Baddie {
+                        stuck_arrows: vec![],
+                        health: 1.0,
+                        entity: Entity { pos: [0.; 3].into(), vel: [0.; 3].into() },
+                        target_archer_index: 0,
+                    };
+                    Self::reset_baddie(&mut rng, &archers, &mut b);
+                    b
                 })
                 .collect(),
             am_server,
@@ -398,18 +389,30 @@ impl MyGame {
         }
     }
 
-    fn rand_baddie_spot(rng: &mut SmallRng, focus: &Archer, archers: &[Archer]) -> Pt3 {
-        let mut p;
-        'another: loop {
-            let offset = Vec3::new(rng.gen_range(-800., 800.), rng.gen_range(-800., 800.), 0.);
-            p = focus.entity.pos + offset;
-            for a in archers.iter() {
-                if (p - a.entity.pos).norm() < 500. {
-                    continue 'another;
+    fn reset_baddie(rng: &mut SmallRng, archers: &[Archer], b: &mut Baddie) {
+        const SPAWN_DISTANCE: f32 = 1_000.;
+        let angle = rng.gen_range(0., PI * 2.);
+        let pos_offset =
+            Rotation3::from_axis_angle(&Vec3::z_axis(), angle) * Vec3::new(SPAWN_DISTANCE, 0., 0.);
+        let index_offset = rng.gen_range(0, archers.len());
+        'archer_loop: for i1 in 0..archers.len() {
+            b.target_archer_index = (i1 + index_offset) % archers.len();
+            b.entity.pos = archers[b.target_archer_index].entity.pos + pos_offset;
+            for (i2, archer) in archers.iter().enumerate() {
+                if i2 != b.target_archer_index
+                    && (archer.entity.pos - b.entity.pos).norm() < SPAWN_DISTANCE
+                {
+                    // this spawn point is too close to `archer`! try another.
+                    continue 'archer_loop;
                 }
             }
-            return p;
+            // this point is SPAWN_DISTANCE+ away from all archers!
+            b.health = 1.;
+            b.stuck_arrows.clear();
+            return;
         }
+        // for SOME archer, an offset of SPAWN_DISTANCE is SPAWN_DISTANCE+ from all archers
+        unreachable!()
     }
 }
 impl EventHandler for MyGame {
@@ -502,14 +505,7 @@ impl EventHandler for MyGame {
                     let mut arrow = entry.take();
                     arrow.pos -= b.entity.pos.coords;
                     if b.health <= 0. {
-                        // "killed"
-                        b.health = 1.;
-                        b.entity.pos = Self::rand_baddie_spot(
-                            &mut self.rng,
-                            &self.archers[self.ui.controlling],
-                            &self.archers,
-                        );
-                        b.stuck_arrows.clear();
+                        Self::reset_baddie(&mut self.rng, &self.archers, b);
                     } else {
                         b.stuck_arrows.push(arrow);
                     }
@@ -523,7 +519,7 @@ impl EventHandler for MyGame {
         if self.ticks % 32 == 0 {
             // recompute baddie trajectory
             for b in &mut self.baddies {
-                b.entity.vel = (self.archers[self.ui.controlling].entity.pos - b.entity.pos)
+                b.entity.vel = (self.archers[b.target_archer_index].entity.pos - b.entity.pos)
                     .normalize()
                     * BADDIE_SPEED;
             }
@@ -634,14 +630,20 @@ impl EventHandler for MyGame {
     ///////////////////////////////////////////////DRAW DRAW DRAW DRAW DRAW DRAW
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        graphics::clear(ctx, GREEN);
-        // the dude
         const DUDE_SCALE: [f32; 2] = [2.; 2];
         const ARROW_SCALE: f32 = 1.7;
         const PULL_BAD_ANGLE: f32 = -0.4;
-        // const PULL_LOW_ANGLE: f32 = -0.1;
+        const FRAME_TICKS: usize = 6;
 
-        // dbg!(self.archers[self.ui.controlling].entity.vel);
+        graphics::clear(ctx, GREEN);
+        let archer_walk_x = match self.ticks % (FRAME_TICKS * 6) {
+            x if x < FRAME_TICKS * 1 => 0.0,
+            x if x < FRAME_TICKS * 2 => 0.2,
+            x if x < FRAME_TICKS * 3 => 0.4,
+            x if x < FRAME_TICKS * 4 => 0.6,
+            x if x < FRAME_TICKS * 5 => 0.4,
+            ________________________ => 0.2,
+        };
         for (archer_index, a) in self.archers.iter().enumerate() {
             let right_facing = self.ui.camera.archer_facing_right(a);
             let facing_dude_scale = [
@@ -649,8 +651,7 @@ impl EventHandler for MyGame {
                 DUDE_SCALE[0] * if right_facing { 1. } else { -1. },
                 DUDE_SCALE[1],
             ];
-            let dude_arm_pos = self.ui.camera.pt_3_to_2(a.entity.pos + Vec3::new(0., 0., ARM_Z));
-            // let dude_feet_pos = self.ui.camera.pt_3_to_2(a.entity.pos);
+            let dude_arm_pos = self.ui.camera.pt_3_to_2(a.entity.pos + Vec3::from(TO_ARMS));
             let dude_param = DrawParam {
                 src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
                 dest: dude_arm_pos.into(),
@@ -660,19 +661,7 @@ impl EventHandler for MyGame {
                 ..Default::default()
             };
             let main_src = {
-                let x = if a.entity.vel != Vec3::new(0., 0., 0.) {
-                    const FRAME_TICKS: usize = 10;
-                    match self.ticks % (FRAME_TICKS * 6) {
-                        x if x < FRAME_TICKS * 1 => 0.0,
-                        x if x < FRAME_TICKS * 2 => 0.2,
-                        x if x < FRAME_TICKS * 3 => 0.4,
-                        x if x < FRAME_TICKS * 4 => 0.6,
-                        x if x < FRAME_TICKS * 5 => 0.4,
-                        ________________________ => 0.2,
-                    }
-                } else {
-                    0.4
-                };
+                let x = if a.entity.vel != Vec3::new(0., 0., 0.) { archer_walk_x } else { 0.4 };
                 Rect { x, y: 0., h: 0.2, w: 0.2 }
             };
             let (arm_src, arm_angle, arrow_angle) = if let Some(shot_vel) = a.shot_vel {
