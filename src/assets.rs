@@ -7,19 +7,6 @@ pub const GREEN: Color = Color { r: 0.1, g: 0.4, b: 0.1, a: 1. };
 pub const BLUE: Color = Color { r: 0., g: 0., b: 1., a: 1. };
 pub const WALK_SPEED: f32 = 4.0;
 
-// impl core::ops::Index<PullLevel> for AudioAssets {
-//     type Output = Source;
-//     fn index(&self, t: PullLevel) -> &Self::Output {
-//         // &self.taut[t.level()]
-//         &self.taut[0]
-//     }
-// }
-// impl core::ops::IndexMut<PullLevel> for AudioAssets {
-//     fn index_mut(&mut self, t: PullLevel) -> &mut Self::Output {
-//         // &mut self.taut[t.level()]
-//         &mut self.taut[0]
-//     }
-// }
 fn linear(mut image: Image) -> Image {
     image.set_filter(FilterMode::Nearest);
     image
