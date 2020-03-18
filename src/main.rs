@@ -121,10 +121,6 @@ struct Camera {
     world_pos: Pt3,
     world_rot: f32,
 }
-struct RclickState {
-    anchor_pt: Pt2,
-    anchor_angle: f32,
-}
 struct Ui {
     camera: Camera,
     lclick_state: Option<LclickState>,
@@ -135,6 +131,7 @@ struct Ui {
     controlling: usize,
     config: UiConfig,
 }
+
 struct Archer {
     entity: Entity,
     shot_vel: Option<Vec3>,
@@ -173,9 +170,11 @@ struct MyGame {
     rng: SmallRng,
     ui: Ui,
 }
+struct RclickState {
+    anchor_angle: f32,
+}
 struct LclickState {
     start: Pt2,
-    // shot_vel: Vec3,
     last_pull_level: PullLevel,
 }
 struct Baddie {
@@ -200,6 +199,37 @@ enum PullLevel {
 }
 /////////////////// IMPL IMPL IMPL IMPL IMPL
 
+impl Ui {
+    fn recalculate_dude_vel(&self, archer: &mut Archer) {
+        let vel2 = Vec2::new(
+            match self.pressing.right {
+                Some(true) => 1.,
+                Some(false) => -1.,
+                _ => 0.,
+            },
+            match self.pressing.down {
+                Some(true) => 1.,
+                Some(false) => -1.,
+                _ => 0.,
+            },
+        );
+        let vel3 = self.camera.vec_2_to_3(vel2);
+
+        let mut speed = if self.pressing.down.is_some() && self.pressing.right.is_some() {
+            WALK_SPEED / ROOT_OF_2
+        } else {
+            WALK_SPEED
+        };
+        if let Some(shot_vel) = archer.shot_vel {
+            speed *= 0.6;
+            let backpedaling = shot_vel.dot(&vel3) < 0.;
+            if backpedaling {
+                speed *= 0.4;
+            }
+        }
+        archer.entity.vel = vel3 * speed;
+    }
+}
 impl DoodadKind {
     fn rect(&self) -> Rect {
         let x = match self {
@@ -225,6 +255,12 @@ impl Default for Camera {
     }
 }
 impl Camera {
+    fn archer_facing_right(&self, archer: &Archer) -> bool {
+        archer
+            .shot_vel
+            .map(|v| self.vec_3_to_2(v)[0] >= 0.)
+            .unwrap_or(self.vec_3_to_2(archer.entity.vel)[0] >= 0.)
+    }
     fn vec_3_to_2(&self, v: Vec3) -> Vec2 {
         let v: Vec3 = Rotation3::from_axis_angle(&Vec3::z_axis(), self.world_rot) * v;
         [v[0], v[1] / ROOT_OF_2 + v[2] / ROOT_OF_2].into()
@@ -303,13 +339,6 @@ impl PullLevel {
 }
 
 impl MyGame {
-    fn body_facing(&self) -> bool {
-        self.archers[self.ui.controlling]
-            .shot_vel
-            .map(|v| self.ui.camera.vec_3_to_2(v)[0] > 0.)
-            .or(self.ui.pressing.right)
-            .unwrap_or(true)
-    }
     fn new(ctx: &mut Context, am_server: bool) -> Self {
         let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
         let config = {
@@ -322,10 +351,20 @@ impl MyGame {
             let x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
             x.try_into().expect("Failed to parse config toml!")
         };
-        let archers = vec![Archer {
-            shot_vel: None,
-            entity: Entity { pos: [0.; 3].into(), vel: [0.; 3].into() },
-        }];
+        let archers = vec![
+            Archer {
+                shot_vel: None,
+                entity: Entity { pos: [0., 0., 0.].into(), vel: [0.; 3].into() },
+            },
+            Archer {
+                shot_vel: Some(Vec3::new(8., 12., -12.)),
+                entity: Entity { pos: [50., 50., 0.].into(), vel: [0.; 3].into() },
+            },
+            Archer {
+                shot_vel: Some(Vec3::new(-6., 11., -17.)),
+                entity: Entity { pos: [120., 50., 0.].into(), vel: [0.; 3].into() },
+            },
+        ];
         let ui = Ui {
             controlling: 0,
             config,
@@ -358,64 +397,13 @@ impl MyGame {
             ui,
         }
     }
-    fn recalculate_dude_vel(&mut self) {
-        let mut speed = WALK_SPEED;
-
-        // speed decreased if aiming
-        if self.archers[self.ui.controlling].shot_vel.is_some() {
-            speed *= 0.7;
-            let facing = self.body_facing();
-            if let Some(right) = self.ui.pressing.right {
-                // speed decreased if walking backwards
-                if facing != right {
-                    speed *= 0.5;
-                }
-            }
-        }
-        // h and v speed decreased if moving horizontally & vertically
-        if self.ui.pressing.down.is_some() && self.ui.pressing.right.is_some() {
-            speed /= ROOT_OF_2
-        };
-
-        let vel: Vec2 = [
-            match self.ui.pressing.right {
-                Some(true) => speed,
-                Some(false) => -speed,
-                _ => 0.,
-            },
-            match self.ui.pressing.down {
-                Some(true) => speed,
-                Some(false) => -speed,
-                _ => 0.,
-            },
-        ]
-        .into();
-        self.archers[self.ui.controlling].entity.vel = self.ui.camera.vec_2_to_3(vel);
-    }
     fn recalculate_rotation_wrt(&mut self, wrt: Pt2) {
-        if let Some(RclickState { anchor_angle, anchor_pt }) = &mut self.ui.rclick_state {
+        if let Some(RclickState { anchor_angle }) = &mut self.ui.rclick_state {
             let diff_is: Pt2 =
                 wrt - self.ui.camera.pt_3_to_2(self.archers[self.ui.controlling].entity.pos).coords;
             let angle_is = Camera::rot_of_xy(diff_is.coords);
-
-            // ggez::input::mouse::set_position(ctx, anchor_pt).unwrap();
-            let axisangle = na::Vector3::z() * (angle_is - *anchor_angle);
-            let rot = Rotation3::new(axisangle);
-            let origin = self.archers[self.ui.controlling].entity.pos.coords;
-            let pos_recalc = move |pos| (rot * (pos - origin)) + origin;
-            for a in self.arrows.iter_mut().chain(self.stuck_arrows.iter_mut()) {
-                a.pos = pos_recalc(a.pos);
-                a.vel = rot * a.vel;
-            }
-            for d in self
-                .doodads
-                .iter_mut()
-                .map(|d| &mut d.pos)
-                .chain(self.baddies.iter_mut().map(|d| &mut d.entity.pos))
-            {
-                *d = pos_recalc(*d);
-            }
-            *anchor_pt = wrt;
+            let angle_diff = angle_is - *anchor_angle;
+            self.ui.camera.world_rot += angle_diff;
             *anchor_angle = angle_is;
         }
     }
@@ -456,7 +444,7 @@ impl EventHandler for MyGame {
             }
             _ => return,
         }
-        self.recalculate_dude_vel();
+        self.ui.recalculate_dude_vel(&mut self.archers[self.ui.controlling]);
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         match keycode {
@@ -481,11 +469,17 @@ impl EventHandler for MyGame {
             }
             _ => return,
         }
-        self.recalculate_dude_vel();
+        self.ui.recalculate_dude_vel(&mut self.archers[self.ui.controlling]);
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
-        let mut draining = Draining::new(&mut self.arrows);
+        // rotate camera
+        self.ui.camera.world_rot += match self.ui.pressing.clockwise {
+            None => 0.,
+            Some(true) => -0.05,
+            Some(false) => 0.05,
+        };
+        // update archers and baddies' positions
         for e in self
             .baddies
             .iter_mut()
@@ -494,16 +488,20 @@ impl EventHandler for MyGame {
         {
             e.pos += e.vel;
         }
-        self.ui.camera.world_rot += match self.ui.pressing.clockwise {
-            None => 0.,
-            Some(true) => -0.05,
-            Some(false) => 0.05,
-        };
+        // update camera position
         self.ui.camera.world_pos = self.archers[self.ui.controlling].entity.pos;
+        // update arrows' positions and fire collision events
+        let mut draining = Draining::new(&mut self.arrows);
         'entry_loop: while let Some(mut entry) = draining.next() {
             let arrow: &mut Entity = entry.get_mut();
             arrow.update();
-            let mut stuck = arrow.pos[2] >= 0.;
+            if arrow.pos[2] >= 0. {
+                let index = self.ticks % 3;
+                self.assets.audio.twang[index].play().unwrap();
+                arrow.pos[2] = arrow.pos[2].min(0.);
+                self.stuck_arrows.push(entry.take());
+                continue 'entry_loop;
+            }
             for b in &mut self.baddies {
                 let mut baddie_dist = arrow.pos.coords - b.entity.pos.coords;
                 baddie_dist[2] *= 0.25;
@@ -528,30 +526,21 @@ impl EventHandler for MyGame {
                     continue 'entry_loop;
                 }
             }
-            for d in self.doodads.iter() {
-                if stuck {
-                    break;
-                }
-                let mut diff = d.pos - arrow.pos.coords;
-                diff[2] *= 0.5;
-                if diff.coords.norm_squared() < 400. {
-                    stuck = true;
-                }
-            }
-            if stuck {
-                let index = self.ticks % 3;
-                self.assets.audio.twang[index].play().unwrap();
-                arrow.pos[2] = arrow.pos[2].min(0.);
-                self.stuck_arrows.push(entry.take())
-            }
-        }
-        match self.ui.rclick_state {
-            Some(RclickState { anchor_pt, .. })
-                if self.ui.pressing.down.is_some() || self.ui.pressing.right.is_some() =>
-            {
-                self.recalculate_rotation_wrt(anchor_pt);
-            }
-            _ => {}
+            // for d in self.doodads.iter() {
+            //     let mut diff = d.pos - arrow.pos.coords;
+            //     diff[2] *= 0.5;
+            //     if diff.coords.norm_squared() < 400. {
+            //         stuck = true;
+            //         break;
+            //     }
+            // }
+            // if stuck {
+            //     let index = self.ticks % 3;
+            //     self.assets.audio.twang[index].play().unwrap();
+            //     arrow.pos[2] = arrow.pos[2].min(0.);
+            //     self.stuck_arrows.push(entry.take());
+            //     continue 'entry_loop;
+            // }
         }
         self.ticks = self.ticks.wrapping_add(1);
         if self.ticks % 32 == 0 {
@@ -577,10 +566,8 @@ impl EventHandler for MyGame {
                 let anchor_pt: Pt2 = [x, y].into();
                 let anchor_diff: Pt2 = anchor_pt
                     - self.ui.camera.pt_3_to_2(self.archers[self.ui.controlling].entity.pos).coords;
-                self.ui.rclick_state = Some(RclickState {
-                    anchor_pt,
-                    anchor_angle: Camera::rot_of_xy(anchor_diff.coords),
-                })
+                self.ui.rclick_state =
+                    Some(RclickState { anchor_angle: Camera::rot_of_xy(anchor_diff.coords) })
             }
             _ => {}
         }
@@ -666,28 +653,102 @@ impl EventHandler for MyGame {
         // the dude
         const DUDE_SCALE: [f32; 2] = [2.; 2];
         const ARROW_SCALE: f32 = 1.7;
-        let right_facing = self.body_facing();
-        let facing_dude_scale = [
-            //
-            DUDE_SCALE[0] * if right_facing { 1. } else { -1. },
-            DUDE_SCALE[1],
-        ];
-        let dude_arm_pos = self
-            .ui
-            .camera
-            .pt_3_to_2(self.archers[self.ui.controlling].entity.pos + Vec3::new(0., 0., ARM_Z));
-        let dude_feet_pos = self.ui.camera.pt_3_to_2(self.archers[self.ui.controlling].entity.pos);
-        let dude_param = DrawParam {
-            src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
-            dest: dude_arm_pos.into(),
-            color: WHITE,
-            scale: facing_dude_scale.into(),
-            offset: [0.5, 0.5].into(),
-            ..Default::default()
-        };
+        const PULL_BAD_ANGLE: f32 = -0.4;
+        // const PULL_LOW_ANGLE: f32 = -0.1;
+
+        // dbg!(self.archers[self.ui.controlling].entity.vel);
+        for a in self.archers.iter() {
+            let right_facing = self.ui.camera.archer_facing_right(a);
+            let facing_dude_scale = [
+                //
+                DUDE_SCALE[0] * if right_facing { 1. } else { -1. },
+                DUDE_SCALE[1],
+            ];
+            let dude_arm_pos = self.ui.camera.pt_3_to_2(a.entity.pos + Vec3::new(0., 0., ARM_Z));
+            // let dude_feet_pos = self.ui.camera.pt_3_to_2(a.entity.pos);
+            let dude_param = DrawParam {
+                src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
+                dest: dude_arm_pos.into(),
+                color: WHITE,
+                scale: facing_dude_scale.into(),
+                offset: [0.5, 0.5].into(),
+                ..Default::default()
+            };
+            let main_src = {
+                let x = if a.entity.vel != Vec3::new(0., 0., 0.) {
+                    const FRAME_TICKS: usize = 10;
+                    match self.ticks % (FRAME_TICKS * 6) {
+                        x if x < FRAME_TICKS * 1 => 0.0,
+                        x if x < FRAME_TICKS * 2 => 0.2,
+                        x if x < FRAME_TICKS * 3 => 0.4,
+                        x if x < FRAME_TICKS * 4 => 0.6,
+                        x if x < FRAME_TICKS * 5 => 0.4,
+                        ________________________ => 0.2,
+                    }
+                } else {
+                    0.4
+                };
+                Rect { x, y: 0., h: 0.2, w: 0.2 }
+            };
+            let (arm_src, arm_angle, arrow_angle) = if let Some(shot_vel) = a.shot_vel {
+                // drawing the bow
+                let pull_level = PullLevel::from_shot_vel(shot_vel);
+                let arm_src = {
+                    use PullLevel::*;
+                    let x = match pull_level {
+                        TooLittle | TooMuch => 0.,
+                        Low => 0.2,
+                        Med => 0.4,
+                        High => 0.6,
+                        Max => 0.8,
+                    };
+                    Rect { x, y: 0., h: 0.2, w: 0.2 }
+                };
+                let (arm_angle, arrow_angle) = if pull_level.can_shoot() {
+                    let x = Camera::rot_of_xy(self.ui.camera.vec_3_to_2(shot_vel));
+                    (if right_facing { x } else { x + PI }, Some(x))
+                } else if right_facing {
+                    (PULL_BAD_ANGLE, Some(-PULL_BAD_ANGLE))
+                } else {
+                    (-PULL_BAD_ANGLE, Some(PULL_BAD_ANGLE + PI))
+                };
+                (arm_src, arm_angle, arrow_angle)
+            } else {
+                let arm_src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
+                let arm_angle = if right_facing { PULL_BAD_ANGLE } else { -PULL_BAD_ANGLE };
+                (arm_src, arm_angle, None)
+            };
+            graphics::draw(
+                ctx,
+                &self.assets.tex.archer_back,
+                DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
+            )?;
+            graphics::draw(
+                ctx,
+                &self.assets.tex.archer,
+                DrawParam { src: main_src, ..dude_param },
+            )?;
+            graphics::draw(
+                ctx,
+                &self.assets.tex.archer_front,
+                DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
+            )?;
+            if let Some(arrow_angle) = arrow_angle {
+                let p = DrawParam {
+                    dest: (dude_arm_pos + Vec2::new(0., -5.0)).into(),
+                    src: Rect { x: 0., y: 0., w: 1., h: 0.25 },
+                    scale: [ARROW_SCALE, ARROW_SCALE].into(),
+                    rotation: arrow_angle,
+                    offset: [0., 0.5].into(),
+                    ..dude_param
+                };
+                self.assets.tex.arrow_batch.add(p);
+            }
+        }
         fn flatten(p: Pt3) -> Pt3 {
             [p[0], p[1], 0.].into()
         }
+        // doodads
         for doodad in self.doodads.iter() {
             self.assets.tex.doodads.add(DrawParam {
                 src: doodad.kind.rect(),
@@ -698,6 +759,7 @@ impl EventHandler for MyGame {
         }
         let arrow_draw =
             |y: f32, arrow: &Entity, arrow_batch: &mut SpriteBatch, camera: &Camera| {
+                // shadow
                 let src = Rect { x: 0., y, w: 1., h: 0.25 };
                 let dest = camera.pt_3_to_2(flatten(arrow.pos));
                 let [rotation, len] = camera.vel_to_rot_len_shadow(arrow.vel);
@@ -710,7 +772,7 @@ impl EventHandler for MyGame {
                     offset: [0.95, 0.5].into(),
                     ..Default::default()
                 };
-                //real
+                // real
                 arrow_batch.add(p);
                 let dest = camera.pt_3_to_2(arrow.pos);
                 let [rotation, len] = camera.vel_to_rot_len(arrow.vel);
@@ -724,7 +786,7 @@ impl EventHandler for MyGame {
                 };
                 arrow_batch.add(p);
             };
-        // baddie
+        // baddies
         for b in &self.baddies {
             self.assets.tex.doodads.add(DrawParam {
                 src: DoodadKind::Rock.rect(),
@@ -747,172 +809,172 @@ impl EventHandler for MyGame {
         for arrow in self.stuck_arrows.iter() {
             arrow_draw(0.25, arrow, &mut self.assets.tex.arrow_batch, &self.ui.camera);
         }
-        let main_src = {
-            let x = if self.ui.pressing.down.is_some() || self.ui.pressing.right.is_some() {
-                const FRAME_TICKS: usize = 10;
-                match self.ticks % (FRAME_TICKS * 6) {
-                    x if x < FRAME_TICKS * 1 => 0.0,
-                    x if x < FRAME_TICKS * 2 => 0.2,
-                    x if x < FRAME_TICKS * 3 => 0.4,
-                    x if x < FRAME_TICKS * 4 => 0.6,
-                    x if x < FRAME_TICKS * 5 => 0.4,
-                    ________________________ => 0.2,
-                }
-            } else {
-                0.4
-            };
-            Rect { x, y: 0., h: 0.2, w: 0.2 }
-        };
-        let end: Pt2 = ggez::input::mouse::position(ctx).into();
-        match (self.ui.lclick_state.as_ref(), self.archers[self.ui.controlling].shot_vel) {
-            (Some(nocked), Some(shot_vel)) => {
-                let pull_level = PullLevel::from_shot_vel(shot_vel);
-                let line_v = end.coords - nocked.start.coords;
-                let dif_rotation = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &line_v);
-                let dif_rotation_angle = dif_rotation.angle();
+        // let main_src = {
+        //     let x = if self.ui.pressing.down.is_some() || self.ui.pressing.right.is_some() {
+        //         const FRAME_TICKS: usize = 10;
+        //         match self.ticks % (FRAME_TICKS * 6) {
+        //             x if x < FRAME_TICKS * 1 => 0.0,
+        //             x if x < FRAME_TICKS * 2 => 0.2,
+        //             x if x < FRAME_TICKS * 3 => 0.4,
+        //             x if x < FRAME_TICKS * 4 => 0.6,
+        //             x if x < FRAME_TICKS * 5 => 0.4,
+        //             ________________________ => 0.2,
+        //         }
+        //     } else {
+        //         0.4
+        //     };
+        //     Rect { x, y: 0., h: 0.2, w: 0.2 }
+        // };
+        // let end: Pt2 = ggez::input::mouse::position(ctx).into();
+        // match (self.ui.lclick_state.as_ref(), self.archers[self.ui.controlling].shot_vel) {
+        //     (Some(nocked), Some(shot_vel)) => {
+        //         let pull_level = PullLevel::from_shot_vel(shot_vel);
+        //         let line_v = end.coords - nocked.start.coords;
+        //         let dif_rotation = Rotation2::rotation_between(&Pt2::new(1., 0.).coords, &line_v);
+        //         let dif_rotation_angle = dif_rotation.angle();
 
-                let [aim_angle, arm_angle] = if pull_level.can_shoot() {
-                    let aim_angle = Camera::rot_of_xy(self.ui.camera.vec_3_to_2(shot_vel));
-                    [aim_angle, aim_angle + if right_facing { 0. } else { PI }]
-                } else {
-                    [0.; 2]
-                };
-                const NOCK_0_ANGLE: f32 = 0.45;
-                let nock_angle = match (right_facing, pull_level.can_shoot()) {
-                    (true, false) => NOCK_0_ANGLE,
-                    (false, false) => PI - NOCK_0_ANGLE,
-                    _ => aim_angle,
-                };
+        //         let [aim_angle, arm_angle] = if pull_level.can_shoot() {
+        //             let aim_angle = Camera::rot_of_xy(self.ui.camera.vec_3_to_2(shot_vel));
+        //             [aim_angle, aim_angle + if right_facing { 0. } else { PI }]
+        //         } else {
+        //             [0.; 2]
+        //         };
+        //         const NOCK_0_ANGLE: f32 = 0.45;
+        //         let nock_angle = match (right_facing, pull_level.can_shoot()) {
+        //             (true, false) => NOCK_0_ANGLE,
+        //             (false, false) => PI - NOCK_0_ANGLE,
+        //             _ => aim_angle,
+        //         };
 
-                // draw the dude
-                let arm_src = {
-                    use PullLevel::*;
-                    let x = match pull_level {
-                        TooLittle | TooMuch => 0.,
-                        Low => 0.2,
-                        Med => 0.4,
-                        High => 0.6,
-                        Max => 0.8,
-                    };
-                    Rect { x, y: 0., h: 0.2, w: 0.2 }
-                };
-                graphics::draw(
-                    ctx,
-                    &self.assets.tex.archer_back,
-                    DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
-                )?;
-                graphics::draw(
-                    ctx,
-                    &self.assets.tex.archer,
-                    DrawParam { src: main_src, scale: facing_dude_scale.into(), ..dude_param },
-                )?;
-                graphics::draw(
-                    ctx,
-                    &self.assets.tex.archer_front,
-                    DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
-                )?;
+        //         // draw the dude
+        //         let arm_src = {
+        //             use PullLevel::*;
+        //             let x = match pull_level {
+        //                 TooLittle | TooMuch => 0.,
+        //                 Low => 0.2,
+        //                 Med => 0.4,
+        //                 High => 0.6,
+        //                 Max => 0.8,
+        //             };
+        //             Rect { x, y: 0., h: 0.2, w: 0.2 }
+        //         };
+        //         graphics::draw(
+        //             ctx,
+        //             &self.assets.tex.archer_back,
+        //             DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
+        //         )?;
+        //         graphics::draw(
+        //             ctx,
+        //             &self.assets.tex.archer,
+        //             DrawParam { src: main_src, scale: facing_dude_scale.into(), ..dude_param },
+        //         )?;
+        //         graphics::draw(
+        //             ctx,
+        //             &self.assets.tex.archer_front,
+        //             DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
+        //         )?;
 
-                // nocked arrow
-                let nock_at =
-                    self.archers[self.ui.controlling].entity.pos + Pt3::new(0., 0., ARM_Z).coords;
-                let p = DrawParam {
-                    src: Rect { x: 0., y: 0., h: 0.25, w: 1. },
-                    dest: self.ui.camera.pt_3_to_2(nock_at).into(),
-                    color: WHITE,
-                    scale: [ARROW_SCALE; 2].into(),
-                    offset: [0., 0.5].into(),
-                    rotation: nock_angle,
-                    ..Default::default()
-                };
-                self.assets.tex.arrow_batch.add(p);
+        //         // nocked arrow
+        //         let nock_at =
+        //             self.archers[self.ui.controlling].entity.pos + Pt3::new(0., 0., ARM_Z).coords;
+        //         let p = DrawParam {
+        //             src: Rect { x: 0., y: 0., h: 0.25, w: 1. },
+        //             dest: self.ui.camera.pt_3_to_2(nock_at).into(),
+        //             color: WHITE,
+        //             scale: [ARROW_SCALE; 2].into(),
+        //             offset: [0., 0.5].into(),
+        //             rotation: nock_angle,
+        //             ..Default::default()
+        //         };
+        //         self.assets.tex.arrow_batch.add(p);
 
-                let n = line_v.norm();
-                let (color, linelen) = match pull_level.can_shoot() {
-                    false => (RED, n),
-                    true => {
-                        if self.ui.aim_assist >= 1 {
-                            let aim_e_v3 =
-                                self.archers[self.ui.controlling].entity.pos + shot_vel * 7.;
-                            let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
-                            let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
-                            graphics::draw(
-                                ctx,
-                                &self.assets.tex.unit_line,
-                                DrawParam {
-                                    scale: [rel_v2.coords.norm(), 1.].into(),
-                                    rotation: Camera::rot_of_xy(rel_v2.coords),
-                                    offset: [0., 0.5].into(),
-                                    color: BLUE,
-                                    ..dude_param
-                                },
-                            )?;
-                            let aim_e_v3 = self.archers[self.ui.controlling].entity.pos
-                                + Vec3::new(shot_vel[0], shot_vel[1], 0.) * 7.;
-                            let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
-                            let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
-                            graphics::draw(
-                                ctx,
-                                &self.assets.tex.unit_line,
-                                DrawParam {
-                                    dest: dude_feet_pos.into(),
-                                    scale: [rel_v2.coords.norm(), 1.].into(),
-                                    rotation: Camera::rot_of_xy(rel_v2.coords),
-                                    offset: [0., 0.5].into(),
-                                    color: BLACK,
-                                    ..dude_param
-                                },
-                            )?;
-                            if self.ui.aim_assist >= 2 {
-                                let mut arrow = Entity {
-                                    vel: shot_vel,
-                                    pos: self.archers[self.ui.controlling].entity.pos
-                                        - Vec3::new(0., 0., 32.),
-                                };
-                                while arrow.pos[2] < 0. {
-                                    arrow.update();
-                                }
-                                arrow.pos[2] = 0.;
-                                graphics::draw(
-                                    ctx,
-                                    &self.assets.tex.cross,
-                                    DrawParam {
-                                        dest: self.ui.camera.pt_3_to_2(arrow.pos).into(),
-                                        scale: [8., 8. / ROOT_OF_2].into(),
-                                        ..Default::default()
-                                    },
-                                )?;
-                            }
-                        }
-                        (WHITE, n)
-                    }
-                };
-                graphics::draw(
-                    ctx,
-                    &self.assets.tex.unit_line,
-                    DrawParam {
-                        color,
-                        dest: nocked.start.into(),
-                        rotation: dif_rotation_angle,
-                        scale: [linelen, 1.].into(),
-                        ..Default::default()
-                    },
-                )?;
-            }
-            _ => {
-                let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
-                graphics::draw(ctx, &self.assets.tex.archer_back, DrawParam { src, ..dude_param })?;
-                graphics::draw(
-                    ctx,
-                    &self.assets.tex.archer,
-                    DrawParam { src: main_src, ..dude_param },
-                )?;
-                graphics::draw(
-                    ctx,
-                    &self.assets.tex.archer_front,
-                    DrawParam { src, ..dude_param },
-                )?;
-            }
-        }
+        //         let n = line_v.norm();
+        //         let (color, linelen) = match pull_level.can_shoot() {
+        //             false => (RED, n),
+        //             true => {
+        //                 if self.ui.aim_assist >= 1 {
+        //                     let aim_e_v3 =
+        //                         self.archers[self.ui.controlling].entity.pos + shot_vel * 7.;
+        //                     let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
+        //                     let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
+        //                     graphics::draw(
+        //                         ctx,
+        //                         &self.assets.tex.unit_line,
+        //                         DrawParam {
+        //                             scale: [rel_v2.coords.norm(), 1.].into(),
+        //                             rotation: Camera::rot_of_xy(rel_v2.coords),
+        //                             offset: [0., 0.5].into(),
+        //                             color: BLUE,
+        //                             ..dude_param
+        //                         },
+        //                     )?;
+        //                     let aim_e_v3 = self.archers[self.ui.controlling].entity.pos
+        //                         + Vec3::new(shot_vel[0], shot_vel[1], 0.) * 7.;
+        //                     let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
+        //                     let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
+        //                     graphics::draw(
+        //                         ctx,
+        //                         &self.assets.tex.unit_line,
+        //                         DrawParam {
+        //                             dest: dude_feet_pos.into(),
+        //                             scale: [rel_v2.coords.norm(), 1.].into(),
+        //                             rotation: Camera::rot_of_xy(rel_v2.coords),
+        //                             offset: [0., 0.5].into(),
+        //                             color: BLACK,
+        //                             ..dude_param
+        //                         },
+        //                     )?;
+        //                     if self.ui.aim_assist >= 2 {
+        //                         let mut arrow = Entity {
+        //                             vel: shot_vel,
+        //                             pos: self.archers[self.ui.controlling].entity.pos
+        //                                 - Vec3::new(0., 0., 32.),
+        //                         };
+        //                         while arrow.pos[2] < 0. {
+        //                             arrow.update();
+        //                         }
+        //                         arrow.pos[2] = 0.;
+        //                         graphics::draw(
+        //                             ctx,
+        //                             &self.assets.tex.cross,
+        //                             DrawParam {
+        //                                 dest: self.ui.camera.pt_3_to_2(arrow.pos).into(),
+        //                                 scale: [8., 8. / ROOT_OF_2].into(),
+        //                                 ..Default::default()
+        //                             },
+        //                         )?;
+        //                     }
+        //                 }
+        //                 (WHITE, n)
+        //             }
+        //         };
+        //         graphics::draw(
+        //             ctx,
+        //             &self.assets.tex.unit_line,
+        //             DrawParam {
+        //                 color,
+        //                 dest: nocked.start.into(),
+        //                 rotation: dif_rotation_angle,
+        //                 scale: [linelen, 1.].into(),
+        //                 ..Default::default()
+        //             },
+        //         )?;
+        //     }
+        //     _ => {
+        //         let src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
+        //         graphics::draw(ctx, &self.assets.tex.archer_back, DrawParam { src, ..dude_param })?;
+        //         graphics::draw(
+        //             ctx,
+        //             &self.assets.tex.archer,
+        //             DrawParam { src: main_src, ..dude_param },
+        //         )?;
+        //         graphics::draw(
+        //             ctx,
+        //             &self.assets.tex.archer_front,
+        //             DrawParam { src, ..dude_param },
+        //         )?;
+        //     }
+        // }
         graphics::draw(ctx, &self.assets.tex.arrow_batch, DrawParam::default())?;
         graphics::draw(ctx, &self.assets.tex.doodads, DrawParam::default())?;
         self.assets.tex.arrow_batch.clear();
