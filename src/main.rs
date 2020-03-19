@@ -17,6 +17,7 @@ use rand::{
     Rng, SeedableRng,
 };
 use serde_derive::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::net::TcpListener;
@@ -228,11 +229,13 @@ impl DoodadKind {
     }
 }
 impl Entity {
-    fn update(&mut self) {
-        let nsq = self.vel.norm_squared().sqr() + 1.;
-        self.vel += Pt3::new(0., 0., 0.5).coords; // gravity
-        self.vel *= nsq.powf(0.996) / nsq;
-        self.pos += self.vel;
+    #[inline]
+    fn grav_and_air_resist(mut v: Vec3) -> Vec3 {
+        // gravity
+        v += Pt3::new(0., 0., 0.5).coords;
+        // air resistance
+        let vquad = v.norm_squared().sqr() + 1.;
+        v * vquad.powf(0.996) / vquad
     }
 }
 impl Default for Camera {
@@ -348,7 +351,10 @@ impl MyGame {
                     Endpoint::new(x)
                 };
                 let (archers, baddies, arrows) = match e.recv_clientward().unwrap().unwrap() {
-                    Clientward::Welcome { archers, baddies, arrows } => (archers, baddies, arrows),
+                    Clientward::Welcome { archers, baddies, arrows } => {
+                        (archers.into_owned(), baddies.into_owned(), arrows.into_owned())
+                    }
+                    _ => unreachable!("Always get a WELCOME first"),
                 };
                 e.stream.set_nonblocking(true).unwrap();
                 let net_core = NetCore::Client(e);
@@ -385,7 +391,7 @@ impl MyGame {
                             x.set_nonblocking(true).unwrap();
                             x
                         },
-                        clients: vec![],
+                        clients: Clients { endpoints: vec![] },
                     }
                 } else {
                     NetCore::Solo
@@ -449,8 +455,7 @@ impl MyGame {
             }
             return (try_pt, target_archer_index);
         }
-        // for SOME archer, an offset of distance is distance+ from all archers
-        unreachable!()
+        unreachable!("any offset is outside of all archers' range for SOME archer as origin")
     }
 
     fn reset_baddie(rng: &mut SmallRng, archers: &[Archer], b: &mut Baddie) {
@@ -513,10 +518,36 @@ impl EventHandler for MyGame {
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
+        // both servers and clients do these things
+        {
+            // rotate camera
+            self.ui.camera.world_rot += match self.ui.pressing.clockwise {
+                None => 0.,
+                Some(true) => -0.05,
+                Some(false) => 0.05,
+            };
+            // gravity and air resistance on arrows
+            for arrow in self.arrows.iter_mut() {
+                arrow.vel = Entity::grav_and_air_resist(arrow.vel);
+            }
+            // move entities in accordance with their velocity
+            for e in self
+                .baddies
+                .iter_mut()
+                .map(|b| &mut b.entity)
+                .chain(self.arrows.iter_mut())
+                .chain(self.archers.iter_mut().map(|b| &mut b.entity))
+            {
+                e.pos += e.vel;
+            }
+            // update camera position
+            self.ui.camera.world_pos = self.archers[self.ui.controlling].entity.pos;
+        }
         match &mut self.net_core {
             NetCore::Solo => {}
             NetCore::Server { listener, clients } => {
-                if let Ok((stream, _addr)) = listener.accept() {
+                // accept all waiting clients
+                while let Ok((stream, _addr)) = listener.accept() {
                     let new_archer = Archer {
                         entity: Entity {
                             pos: Self::boundary_point(&mut self.rng, 80., &self.archers).0,
@@ -524,79 +555,108 @@ impl EventHandler for MyGame {
                         },
                         shot_vel: None,
                     };
+
+                    // notify existing clients that there is a new SHERIFF IN TOWNNN
+                    let c = Clientward::AddArcher(Cow::Borrowed(&new_archer));
+                    clients.broadcast(&c).unwrap();
+
+                    // add this archer to list, welcome and add the new client
                     self.archers.push(new_archer);
                     let mut e = Endpoint::new(stream);
                     let c = Clientward::Welcome {
-                        archers: self.archers.clone(),
-                        baddies: self.baddies.clone(),
-                        arrows: self.arrows.clone(),
+                        archers: Cow::Borrowed(&self.archers),
+                        baddies: Cow::Borrowed(&self.baddies),
+                        arrows: Cow::Borrowed(&self.arrows),
                     };
                     e.send_clientward(&c).unwrap();
-                    e.send_clientward(&c).unwrap();
-                    println!("SENT!");
-                    clients.push(e);
+                    clients.endpoints.push(e);
                 }
-            }
-            NetCore::Client(_) => {
-                //
-            }
-        }
-        // rotate camera
-        self.ui.camera.world_rot += match self.ui.pressing.clockwise {
-            None => 0.,
-            Some(true) => -0.05,
-            Some(false) => 0.05,
-        };
-        // update archers and baddies' positions
-        for e in self
-            .baddies
-            .iter_mut()
-            .map(|b| &mut b.entity)
-            .chain(self.archers.iter_mut().map(|b| &mut b.entity))
-        {
-            e.pos += e.vel;
-        }
-        // update camera position
-        self.ui.camera.world_pos = self.archers[self.ui.controlling].entity.pos;
-        // update arrows' positions and fire collision events
-        let mut draining = Draining::new(&mut self.arrows);
-        'entry_loop: while let Some(mut entry) = draining.next() {
-            let arrow: &mut Entity = entry.get_mut();
-            arrow.update();
-            if arrow.pos[2] >= 0. {
-                let index = self.ticks % 3;
-                self.assets.audio.twang[index].play().unwrap();
-                arrow.pos[2] = arrow.pos[2].min(0.);
-                self.stuck_arrows.push(entry.take());
-                // stuck in the ground
-                continue 'entry_loop;
-            }
-            for b in &mut self.baddies {
-                let mut baddie_dist = arrow.pos.coords - b.entity.pos.coords;
-                baddie_dist[2] *= 0.25;
-                if baddie_dist.norm() < 32. {
-                    b.entity.vel = [0.; 3].into();
-                    b.health += arrow.pos[2] * 0.01;
-                    let mut arrow = entry.take();
-                    arrow.pos -= b.entity.pos.coords;
-                    if b.health <= 0. {
-                        Self::reset_baddie(&mut self.rng, &self.archers, b);
-                    } else {
-                        b.stuck_arrows.push(arrow);
+                // collision events
+                let mut draining = Draining::new(&mut self.arrows);
+                'entry_loop: while let Some(mut entry) = draining.next() {
+                    let arrow: &mut Entity = entry.get_mut();
+                    if arrow.pos[2] >= 0. {
+                        // arrow hit the ground!
+                        self.assets.audio.twang[self.ticks % 3].play().unwrap();
+                        arrow.pos[2] = arrow.pos[2].min(0.);
+                        let (index, arrow) = entry.take();
+                        let c = Clientward::ArrowHitGround { index, arrow: Cow::Borrowed(&arrow) };
+                        clients.broadcast(&c).unwrap();
+                        self.stuck_arrows.push(arrow);
+                        // stuck in the ground
+                        continue 'entry_loop;
                     }
-                    self.assets.audio.thud[0].play().unwrap();
-                    // stuck in a baddie
-                    continue 'entry_loop;
+                    for (baddie_index, baddie) in self.baddies.iter_mut().enumerate() {
+                        let mut baddie_dist = arrow.pos.coords - baddie.entity.pos.coords;
+                        baddie_dist[2] *= 0.25;
+                        if baddie_dist.norm() < 32. {
+                            baddie.entity.vel = [0.; 3].into();
+                            baddie.health += arrow.pos[2] * 0.01;
+                            let (arrow_index, mut arrow) = entry.take();
+                            arrow.pos -= baddie.entity.pos.coords;
+                            if baddie.health <= 0. {
+                                Self::reset_baddie(&mut self.rng, &self.archers, baddie);
+                            } else {
+                                baddie.stuck_arrows.push(arrow);
+                            }
+                            let c = Clientward::ArrowHitBaddie {
+                                arrow_index,
+                                baddie_index,
+                                baddie: Cow::Borrowed(baddie),
+                            };
+                            clients.broadcast(&c).unwrap();
+                            self.assets.audio.thud[0].play().unwrap();
+                            // stuck in a baddie
+                            continue 'entry_loop;
+                        }
+                    }
+                }
+                self.ticks = self.ticks.wrapping_add(1);
+                if self.ticks % 32 == 0 {
+                    // recompute baddie trajectory
+                    for (index, b) in self.baddies.iter_mut().enumerate() {
+                        b.entity.vel = (self.archers[b.target_archer_index].entity.pos
+                            - b.entity.pos)
+                            .normalize()
+                            * BADDIE_SPEED;
+                        let c =
+                            Clientward::BaddieResync { index, entity: Cow::Borrowed(&b.entity) };
+                        clients.broadcast(&c).unwrap();
+                    }
                 }
             }
-        }
-        self.ticks = self.ticks.wrapping_add(1);
-        if self.ticks % 32 == 0 {
-            // recompute baddie trajectory
-            for b in &mut self.baddies {
-                b.entity.vel = (self.archers[b.target_archer_index].entity.pos - b.entity.pos)
-                    .normalize()
-                    * BADDIE_SPEED;
+            NetCore::Client(endpoint) => {
+                while let Some(c) = endpoint.recv_clientward().unwrap() {
+                    use Clientward::*;
+                    match c {
+                        Welcome { .. } => panic!("already been welcomed!"),
+                        AddArcher(archer) => self.archers.push(archer.into_owned()),
+                        ArrowHitGround { index, arrow } => {
+                            self.assets.audio.twang[self.ticks % 3].play().unwrap();
+                            self.arrows.remove(index);
+                            self.stuck_arrows.push(arrow.into_owned());
+                        }
+                        ArrowHitBaddie { arrow_index, baddie_index, baddie } => {
+                            self.assets.audio.thud[0].play().unwrap();
+                            self.arrows.remove(arrow_index);
+                            self.baddies[baddie_index] = baddie.into_owned(); // overwrite
+                        }
+                        BaddieResync { index, entity } => {
+                            self.baddies[index].entity = entity.into_owned();
+                        }
+                        ArcherEntityResync { index, entity } => {
+                            self.archers[index].entity = entity.into_owned()
+                        }
+                        ArcherShotVelResync { index, shot_vel } => {
+                            self.archers[index].shot_vel = shot_vel.into_owned()
+                        }
+                        ArcherShootArrow { index, shot_vel, pos } => {
+                            self.archers[index].shot_vel = None;
+                            self.arrows.push(Entity { pos, vel: shot_vel });
+                            self.assets.audio.loose[0].play().unwrap();
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -817,7 +877,8 @@ impl EventHandler for MyGame {
                                 pos: a.entity.pos - Vec3::new(0., 0., 32.),
                             };
                             while arrow.pos[2] < 0. {
-                                arrow.update();
+                                arrow.vel = Entity::grav_and_air_resist(arrow.vel);
+                                arrow.pos += arrow.vel;
                             }
                             arrow.pos[2] = 0.;
                             graphics::draw(

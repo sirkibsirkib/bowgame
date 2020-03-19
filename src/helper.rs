@@ -6,9 +6,9 @@ pub struct Entry<'vec, 'entry, T> {
 }
 
 impl<'vec, 'entry, T> Entry<'vec, 'entry, T> {
-    pub fn take(self) -> T {
+    pub fn take(self) -> (usize, T) {
         self.draining.next_index -= 1; // breaks invariant. no longer off-by-one
-        self.draining.vec.remove(self.draining.next_index)
+        (self.draining.next_index, self.draining.vec.remove(self.draining.next_index))
     }
     pub fn get_mut(&mut self) -> &mut T {
         // invariant: off by one

@@ -1,8 +1,39 @@
 use super::*;
 
-#[derive(Deserialize, Serialize)]
-pub(crate) enum Clientward {
-    Welcome { archers: Vec<Archer>, baddies: Vec<Baddie>, arrows: Vec<Entity> },
+#[derive(Deserialize, Serialize, Clone)]
+pub(crate) enum Clientward<'a> {
+    Welcome {
+        archers: Cow<'a, Vec<Archer>>,
+        baddies: Cow<'a, Vec<Baddie>>,
+        arrows: Cow<'a, Vec<Entity>>,
+    },
+    AddArcher(Cow<'a, Archer>),
+    ArrowHitGround {
+        index: usize,
+        arrow: Cow<'a, Entity>,
+    },
+    ArrowHitBaddie {
+        arrow_index: usize,
+        baddie_index: usize,
+        baddie: Cow<'a, Baddie>,
+    },
+    BaddieResync {
+        index: usize,
+        entity: Cow<'a, Entity>,
+    },
+    ArcherEntityResync {
+        index: usize,
+        entity: Cow<'a, Entity>,
+    },
+    ArcherShotVelResync {
+        index: usize,
+        shot_vel: Cow<'a, Option<Vec3>>,
+    },
+    ArcherShootArrow {
+        index: usize,
+        pos: Pt3,
+        shot_vel: Vec3,
+    },
 }
 
 pub(crate) struct Endpoint {
@@ -53,7 +84,18 @@ impl Endpoint {
 }
 
 pub(crate) enum NetCore {
-    Server { listener: TcpListener, clients: Vec<Endpoint> },
+    Server { listener: TcpListener, clients: Clients },
     Client(Endpoint),
     Solo,
+}
+pub(crate) struct Clients {
+    pub endpoints: Vec<Endpoint>,
+}
+impl Clients {
+    pub fn broadcast(&mut self, c: &Clientward) -> Result<(), ()> {
+        for e in self.endpoints.iter_mut() {
+            e.send_clientward(c)?;
+        }
+        Ok(())
+    }
 }
