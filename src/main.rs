@@ -16,6 +16,7 @@ use rand::{
     rngs::SmallRng,
     Rng, SeedableRng,
 };
+use serde::{de::DeserializeOwned, Serialize};
 use serde_derive::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::io::Read;
@@ -62,7 +63,7 @@ fn main() {
         .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
         .build()
         .unwrap();
-    ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
+    // ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
     let mut my_game = MyGame::new(&mut ctx);
     event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
 }
@@ -116,7 +117,7 @@ struct Ui {
     config: UiConfig,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Archer {
     entity: Entity,
     shot_vel: Option<Vec3>,
@@ -162,14 +163,14 @@ struct LclickState {
     start: Pt2,
     last_pull_level: PullLevel,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Baddie {
     target_archer_index: usize,
     entity: Entity,
     stuck_arrows: Vec<Entity>,
     health: f32,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entity {
     pos: Pt3,
     vel: Vec3,
@@ -186,37 +187,6 @@ enum PullLevel {
 }
 /////////////////// IMPL IMPL IMPL IMPL IMPL
 
-impl Ui {
-    fn recalculate_dude_vel(&self, archer: &mut Archer) {
-        let vel2 = Vec2::new(
-            match self.pressing.right {
-                Some(true) => 1.,
-                Some(false) => -1.,
-                _ => 0.,
-            },
-            match self.pressing.down {
-                Some(true) => 1.,
-                Some(false) => -1.,
-                _ => 0.,
-            },
-        );
-        let vel3 = self.camera.vec_2_to_3(vel2);
-
-        let mut speed = if self.pressing.down.is_some() && self.pressing.right.is_some() {
-            WALK_SPEED / ROOT_OF_2
-        } else {
-            WALK_SPEED
-        };
-        if let Some(shot_vel) = archer.shot_vel {
-            speed *= 0.6;
-            let backpedaling = shot_vel.dot(&vel3) < 0.;
-            if backpedaling {
-                speed *= 0.4;
-            }
-        }
-        archer.entity.vel = vel3 * speed;
-    }
-}
 impl DoodadKind {
     fn rect(&self) -> Rect {
         let x = match self {
@@ -350,7 +320,7 @@ impl MyGame {
                     let x = TcpStream::connect(addr).unwrap();
                     Endpoint::new(x)
                 };
-                let (archers, baddies, arrows) = match e.recv_clientward().unwrap().unwrap() {
+                let (archers, baddies, arrows) = match e.recv::<Clientward>().unwrap().unwrap() {
                     Clientward::Welcome { archers, baddies, arrows } => {
                         (archers.into_owned(), baddies.into_owned(), arrows.into_owned())
                     }
@@ -466,6 +436,51 @@ impl MyGame {
         b.target_archer_index = target_archer_index;
         b.entity.pos = try_pt;
     }
+
+    fn recalculate_dude_vel(&mut self) {
+        let index = self.ui.controlling;
+        let archer = &mut self.archers[index];
+        let vel2 = Vec2::new(
+            match self.ui.pressing.right {
+                Some(true) => 1.,
+                Some(false) => -1.,
+                _ => 0.,
+            },
+            match self.ui.pressing.down {
+                Some(true) => 1.,
+                Some(false) => -1.,
+                _ => 0.,
+            },
+        );
+        let vel3 = self.ui.camera.vec_2_to_3(vel2);
+
+        let mut speed = if self.ui.pressing.down.is_some() && self.ui.pressing.right.is_some() {
+            WALK_SPEED / ROOT_OF_2
+        } else {
+            WALK_SPEED
+        };
+        if let Some(shot_vel) = archer.shot_vel {
+            speed *= 0.6;
+            let backpedaling = shot_vel.dot(&vel3) < 0.;
+            if backpedaling {
+                speed *= 0.4;
+            }
+        }
+        archer.entity.vel = vel3 * speed;
+        match &mut self.net_core {
+            NetCore::Solo => {}
+            NetCore::Server { clients, .. } => {
+                let c =
+                    Clientward::ArcherEntityResync { index, entity: Cow::Borrowed(&archer.entity) };
+                clients.broadcast(&c).unwrap();
+            }
+            NetCore::Client(endpoint) => {
+                endpoint
+                    .send(&Serverward::ArcherEntityResync(Cow::Borrowed(&archer.entity)))
+                    .unwrap();
+            }
+        }
+    }
 }
 impl EventHandler for MyGame {
     fn key_down_event(
@@ -489,7 +504,7 @@ impl EventHandler for MyGame {
             }
             _ => return,
         }
-        self.ui.recalculate_dude_vel(&mut self.archers[self.ui.controlling]);
+        self.recalculate_dude_vel();
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         match keycode {
@@ -514,7 +529,7 @@ impl EventHandler for MyGame {
             }
             _ => return,
         }
-        self.ui.recalculate_dude_vel(&mut self.archers[self.ui.controlling]);
+        self.recalculate_dude_vel();
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
@@ -542,10 +557,42 @@ impl EventHandler for MyGame {
             }
             // update camera position
             self.ui.camera.world_pos = self.archers[self.ui.controlling].entity.pos;
+            self.ticks = self.ticks.wrapping_add(1);
         }
         match &mut self.net_core {
             NetCore::Solo => {}
             NetCore::Server { listener, clients } => {
+                // handle and forward all client requests
+                while let Some((client_index, msg)) = clients.recv_any::<Serverward>().unwrap() {
+                    let archer_index = client_index + 1;
+                    match msg {
+                        Serverward::ArcherEntityResync(entity) => {
+                            let c = &Clientward::ArcherEntityResync {
+                                index: archer_index,
+                                entity: entity.clone(),
+                            };
+                            clients.broadcast_excepting(&c, client_index).unwrap();
+                            self.archers[archer_index].entity = entity.into_owned()
+                        }
+                        Serverward::ArcherShotVelResync(shot_vel) => {
+                            let c = &Clientward::ArcherShotVelResync {
+                                index: archer_index,
+                                shot_vel: shot_vel.clone(),
+                            };
+                            clients.broadcast_excepting(&c, client_index).unwrap();
+                            self.archers[archer_index].shot_vel = shot_vel.into_owned()
+                        }
+                        Serverward::ArcherShootArrow(arrow) => {
+                            self.archers[archer_index].shot_vel = None;
+                            let c = Clientward::ArcherShootArrow {
+                                index: archer_index,
+                                entity: arrow.clone(),
+                            };
+                            clients.broadcast_excepting(&c, client_index).unwrap();
+                            self.arrows.push(arrow.into_owned());
+                        }
+                    }
+                }
                 // accept all waiting clients
                 while let Ok((stream, _addr)) = listener.accept() {
                     let new_archer = Archer {
@@ -568,7 +615,7 @@ impl EventHandler for MyGame {
                         baddies: Cow::Borrowed(&self.baddies),
                         arrows: Cow::Borrowed(&self.arrows),
                     };
-                    e.send_clientward(&c).unwrap();
+                    e.send(&c).unwrap();
                     clients.endpoints.push(e);
                 }
                 // collision events
@@ -611,8 +658,8 @@ impl EventHandler for MyGame {
                         }
                     }
                 }
-                self.ticks = self.ticks.wrapping_add(1);
-                if self.ticks % 32 == 0 {
+                const TICKS_PER_UPDATE: usize = 64;
+                if self.ticks % TICKS_PER_UPDATE == 0 {
                     // recompute baddie trajectory
                     for (index, b) in self.baddies.iter_mut().enumerate() {
                         b.entity.vel = (self.archers[b.target_archer_index].entity.pos
@@ -626,7 +673,7 @@ impl EventHandler for MyGame {
                 }
             }
             NetCore::Client(endpoint) => {
-                while let Some(c) = endpoint.recv_clientward().unwrap() {
+                while let Some(c) = endpoint.recv::<Clientward>().unwrap() {
                     use Clientward::*;
                     match c {
                         Welcome { .. } => panic!("already been welcomed!"),
@@ -650,9 +697,9 @@ impl EventHandler for MyGame {
                         ArcherShotVelResync { index, shot_vel } => {
                             self.archers[index].shot_vel = shot_vel.into_owned()
                         }
-                        ArcherShootArrow { index, shot_vel, pos } => {
+                        ArcherShootArrow { index, entity } => {
                             self.archers[index].shot_vel = None;
-                            self.arrows.push(Entity { pos, vel: shot_vel });
+                            self.arrows.push(entity.into_owned());
                             self.assets.audio.loose[0].play().unwrap();
                         }
                     }
@@ -702,7 +749,20 @@ impl EventHandler for MyGame {
                     for t in &mut self.assets.audio.taut {
                         t.stop();
                     }
-                    self.arrows.push(arrow);
+                    match &mut self.net_core {
+                        NetCore::Client(endpoint) => endpoint
+                            .send(&Serverward::ArcherShootArrow(Cow::Borrowed(&arrow)))
+                            .unwrap(),
+                        NetCore::Solo => self.arrows.push(arrow),
+                        NetCore::Server { clients, .. } => {
+                            let c = Clientward::ArcherShootArrow {
+                                index: self.ui.controlling,
+                                entity: Cow::Borrowed(&arrow),
+                            };
+                            clients.broadcast(&c).unwrap();
+                            self.arrows.push(arrow);
+                        }
+                    }
                 }
             }
             MouseButton::Right => self.ui.rclick_state = None,
@@ -716,9 +776,10 @@ impl EventHandler for MyGame {
             return;
         }
         self.ui.last_mouse_at = mouse_at;
+        let archer = &mut self.archers[self.ui.controlling];
         if let (Some(LclickState { start, last_pull_level }), (entity, Some(shot_vel))) =
             (&mut self.ui.lclick_state, {
-                let Archer { entity, shot_vel } = &mut self.archers[self.ui.controlling];
+                let Archer { entity, shot_vel } = archer;
                 (entity as &Entity, shot_vel)
             })
         {
@@ -750,6 +811,22 @@ impl EventHandler for MyGame {
                     self.assets.audio.taut[index].play().unwrap();
                 }
                 *last_pull_level = new_pull_level;
+            }
+            match &mut self.net_core {
+                NetCore::Solo => {}
+                NetCore::Client(endpoint) => {
+                    endpoint
+                        .send(&Serverward::ArcherShotVelResync(Cow::Borrowed(&archer.shot_vel)))
+                        .unwrap();
+                }
+                NetCore::Server { clients, .. } => {
+                    clients
+                        .broadcast(&Clientward::ArcherShotVelResync {
+                            index: self.ui.controlling,
+                            shot_vel: Cow::Borrowed(&archer.shot_vel),
+                        })
+                        .unwrap();
+                }
             }
         }
         if let Some(RclickState { anchor_angle }) = &mut self.ui.rclick_state {

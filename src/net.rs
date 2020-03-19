@@ -1,6 +1,13 @@
 use super::*;
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub(crate) enum Serverward<'a> {
+    ArcherEntityResync(Cow<'a, Entity>),
+    ArcherShotVelResync(Cow<'a, Option<Vec3>>),
+    ArcherShootArrow(Cow<'a, Entity>),
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub(crate) enum Clientward<'a> {
     Welcome {
         archers: Cow<'a, Vec<Archer>>,
@@ -31,8 +38,7 @@ pub(crate) enum Clientward<'a> {
     },
     ArcherShootArrow {
         index: usize,
-        pos: Pt3,
-        shot_vel: Vec3,
+        entity: Cow<'a, Entity>,
     },
 }
 
@@ -48,38 +54,67 @@ impl Endpoint {
         unsafe { inbuf.set_len(Self::BUFCAP) };
         Self { inbuf, stream, got: 0 }
     }
-    pub fn send_clientward(&mut self, c: &Clientward) -> Result<(), ()> {
-        let b = bincode::serialize(c).map_err(drop)?;
-        println!("LEN={:?}", b.len());
-        use std::io::Write;
-        self.stream.write_all(&b).map_err(drop)
+    pub fn send<M: Serialize>(&mut self, msg: &M) -> Result<(), ()> {
+        bincode::serialize_into(&mut self.stream, msg).map_err(drop)
     }
-    pub fn recv_clientward(&mut self) -> Result<Option<Clientward>, ()> {
+    pub fn recv<M: DeserializeOwned>(&mut self) -> Result<Option<M>, ()> {
         loop {
-            println!("loop");
-            match bincode::deserialize::<Clientward>(&self.inbuf[..self.got]) {
+            let mut monitored = MonitoredReader::from(&self.inbuf[..self.got]);
+            match bincode::deserialize_from::<_, M>(&mut monitored) {
                 Ok(msg) => {
-                    println!("ok");
-                    let read_bytes = bincode::serialized_size(&msg).unwrap();
+                    let read_bytes = monitored.bytes_read();
                     self.inbuf.drain(0..read_bytes as usize);
-                    unsafe { self.inbuf.set_len(Self::BUFCAP) };
+                    self.inbuf.resize(Self::BUFCAP, 0u8);
+                    self.got -= read_bytes;
                     return Ok(Some(msg));
                 }
                 Err(e) => match *e {
                     bincode::ErrorKind::Io(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                        println!("ok not enough to build a message. read!");
                         // try read from stream
-                        let count = self.stream.read(&mut self.inbuf[self.got..]).map_err(drop)?;
-                        println!("count == {}", count);
+                        let count = match self.stream.read(&mut self.inbuf[self.got..]) {
+                            Ok(0) => return Ok(None),
+                            Ok(count) => count,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                return Ok(None);
+                            }
+                            Err(e) => {
+                                println!("READ ERR {:?}", e);
+                                return Err(());
+                            }
+                        };
                         if count == 0 {
                             return Ok(None);
                         }
                         self.got += count;
                     }
-                    e => return Err(println!("err! {:?}", e)),
+                    e => {
+                        println!("ENDPOINT err! {:?}", e);
+                        return Err(());
+                    }
                 },
             }
         }
+    }
+}
+pub struct MonitoredReader<R: Read> {
+    bytes: usize,
+    r: R,
+}
+impl<R: Read> From<R> for MonitoredReader<R> {
+    fn from(r: R) -> Self {
+        Self { r, bytes: 0 }
+    }
+}
+impl<R: Read> MonitoredReader<R> {
+    pub fn bytes_read(&self) -> usize {
+        self.bytes
+    }
+}
+impl<R: Read> Read for MonitoredReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        let n = self.r.read(buf)?;
+        self.bytes += n;
+        Ok(n)
     }
 }
 
@@ -92,10 +127,28 @@ pub(crate) struct Clients {
     pub endpoints: Vec<Endpoint>,
 }
 impl Clients {
-    pub fn broadcast(&mut self, c: &Clientward) -> Result<(), ()> {
+    pub fn broadcast<M: Serialize>(&mut self, c: &M) -> Result<(), ()> {
         for e in self.endpoints.iter_mut() {
-            e.send_clientward(c)?;
+            e.send(c)?;
         }
         Ok(())
+    }
+    pub fn broadcast_excepting<M: Serialize>(&mut self, c: &M, index: usize) -> Result<(), ()> {
+        for (i, e) in self.endpoints.iter_mut().enumerate() {
+            if i != index {
+                e.send(c)?;
+            }
+        }
+        Ok(())
+    }
+    pub fn recv_any<M: DeserializeOwned>(&mut self) -> Result<Option<(usize, M)>, ()> {
+        for (index, e) in self.endpoints.iter_mut().enumerate() {
+            match e.recv() {
+                Ok(Some(msg)) => return Ok(Some((index, msg))),
+                Err(()) => return Err(()),
+                Ok(None) => continue,
+            }
+        }
+        Ok(None)
     }
 }
