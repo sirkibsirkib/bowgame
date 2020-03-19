@@ -1,5 +1,6 @@
 use core::convert::TryInto;
 use core::f32::consts::PI;
+use core::str::FromStr;
 use ggez::{
     audio::{SoundSource, Source},
     conf::WindowMode,
@@ -63,7 +64,7 @@ fn main() {
         .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
         .build()
         .unwrap();
-    // ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
+    ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
     let mut my_game = MyGame::new(&mut ctx);
     event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
 }
@@ -133,6 +134,23 @@ struct UiConfigSerde {
     anticlockwise: String,
     aim_assist: String,
     quit: String,
+    net_mode: String,
+    addr: String,
+}
+#[derive(Copy, Clone, Debug)]
+enum NetMode {
+    Server,
+    Client,
+}
+impl FromStr for NetMode {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "Server" => NetMode::Server,
+            "Client" => NetMode::Client,
+            _ => return Err(()),
+        })
+    }
 }
 struct UiConfig {
     up: KeyCode,
@@ -143,6 +161,8 @@ struct UiConfig {
     anticlockwise: KeyCode,
     aim_assist: KeyCode,
     quit: KeyCode,
+    net_mode: NetMode,
+    addr: SocketAddr,
 }
 struct MyGame {
     net_core: NetCore,
@@ -299,10 +319,8 @@ impl PullLevel {
 
 impl MyGame {
     fn new(ctx: &mut Context) -> Self {
-        let mut args = std::env::args();
-        args.next().unwrap(); //skip arg0
         let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
-        let config = {
+        let config: UiConfig = {
             let s = std::fs::read_to_string("ui_config.toml").unwrap_or_else(|_| {
                 panic!(
                     "Couldn't find `ui_config.toml` at current directory: {:?}",
@@ -312,10 +330,17 @@ impl MyGame {
             let x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
             x.try_into().expect("Failed to parse config toml!")
         };
-        let addr: SocketAddr = args.next().unwrap().parse().unwrap(); // get addr
-        println!("addr {:?}", addr);
-        match args.next().as_ref().map(String::as_str) {
-            Some("C") => {
+        let mut args = std::env::args();
+        let _ = args.next(); //skip arg0
+        let addr: SocketAddr =
+            args.next().map(|s| s.parse().expect("BAD ADDR FLAG! (pos 1)")).unwrap_or(config.addr);
+        let net_mode: NetMode = args
+            .next()
+            .map(|s| s.parse().expect("BAD NET MODE FLAG! (pos 1)"))
+            .unwrap_or(config.net_mode);
+        println!("addr: {:?} net_mode {:?}", &addr, &net_mode);
+        match net_mode {
+            NetMode::Client => {
                 let mut e = {
                     let x = TcpStream::connect(addr).unwrap();
                     Endpoint::new(x)
@@ -352,19 +377,15 @@ impl MyGame {
                     ui,
                 }
             }
-            a => {
+            NetMode::Server => {
                 //
-                let net_core = if let Some("S") = a {
-                    NetCore::Server {
-                        listener: {
-                            let x = TcpListener::bind(addr).unwrap();
-                            x.set_nonblocking(true).unwrap();
-                            x
-                        },
-                        clients: Clients { endpoints: vec![] },
-                    }
-                } else {
-                    NetCore::Solo
+                let net_core = NetCore::Server {
+                    listener: {
+                        let x = TcpListener::bind(addr).unwrap();
+                        x.set_nonblocking(true).unwrap();
+                        x
+                    },
+                    clients: Clients { endpoints: vec![] },
                 };
                 let archers = vec![Archer {
                     shot_vel: None,
@@ -406,6 +427,7 @@ impl MyGame {
                     ui,
                 }
             }
+            _ => panic!("BAD ARGS"),
         }
     }
 
@@ -468,7 +490,7 @@ impl MyGame {
         }
         archer.entity.vel = vel3 * speed;
         match &mut self.net_core {
-            NetCore::Solo => {}
+            NetCore::Solo => (),
             NetCore::Server { clients, .. } => {
                 let c =
                     Clientward::ArcherEntityResync { index, entity: Cow::Borrowed(&archer.entity) };
@@ -588,7 +610,8 @@ impl EventHandler for MyGame {
                                 index: archer_index,
                                 entity: arrow.clone(),
                             };
-                            clients.broadcast_excepting(&c, client_index).unwrap();
+                            // even the original archer doesn't shoot the arrow yet
+                            clients.broadcast(&c).unwrap();
                             self.arrows.push(arrow.into_owned());
                         }
                     }
@@ -745,10 +768,6 @@ impl EventHandler for MyGame {
                         }
                     })
                 {
-                    self.assets.audio.loose[0].play().unwrap();
-                    for t in &mut self.assets.audio.taut {
-                        t.stop();
-                    }
                     match &mut self.net_core {
                         NetCore::Client(endpoint) => endpoint
                             .send(&Serverward::ArcherShootArrow(Cow::Borrowed(&arrow)))
@@ -759,6 +778,10 @@ impl EventHandler for MyGame {
                                 index: self.ui.controlling,
                                 entity: Cow::Borrowed(&arrow),
                             };
+                            self.assets.audio.loose[0].play().unwrap();
+                            for t in &mut self.assets.audio.taut {
+                                t.stop();
+                            }
                             clients.broadcast(&c).unwrap();
                             self.arrows.push(arrow);
                         }

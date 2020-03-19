@@ -126,6 +126,8 @@ impl TryInto<UiConfig> for UiConfigSerde {
             anticlockwise: keycode(&self.anticlockwise)?,
             aim_assist: keycode(&self.aim_assist)?,
             quit: keycode(&self.quit)?,
+            net_mode: self.net_mode.parse()?,
+            addr: self.addr.parse().map_err(drop)?,
         })
     }
 }
