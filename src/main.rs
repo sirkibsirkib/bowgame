@@ -532,6 +532,8 @@ impl EventHandler for MyGame {
                         arrows: self.arrows.clone(),
                     };
                     e.send_clientward(&c).unwrap();
+                    e.send_clientward(&c).unwrap();
+                    println!("SENT!");
                     clients.push(e);
                 }
             }
