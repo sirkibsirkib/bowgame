@@ -341,16 +341,54 @@ impl MyGame {
         };
         let addr: SocketAddr = args.next().unwrap().parse().unwrap(); // get addr
         println!("addr {:?}", addr);
-        match args.next().unwrap().as_ref() {
-            "S" => {
+        match args.next().as_ref().map(String::as_str) {
+            Some("C") => {
+                let mut e = {
+                    let x = TcpStream::connect(addr).unwrap();
+                    Endpoint::new(x)
+                };
+                let (archers, baddies, arrows) = match e.recv_clientward().unwrap().unwrap() {
+                    Clientward::Welcome { archers, baddies, arrows } => (archers, baddies, arrows),
+                };
+                e.stream.set_nonblocking(true).unwrap();
+                let net_core = NetCore::Client(e);
+
+                let ui = Ui {
+                    controlling: archers.len() - 1,
+                    config,
+                    camera: Camera::default(),
+                    last_mouse_at: [0.; 2].into(),
+                    rclick_state: None,
+                    lclick_state: None,
+                    pressing: Default::default(),
+                    aim_assist: 0,
+                };
+                MyGame {
+                    net_core,
+                    baddies,
+                    ticks: 0,
+                    archers,
+                    arrows,
+                    stuck_arrows: vec![],
+                    assets: Assets::new(ctx),
+                    doodads: starting_doodads(&mut rng),
+                    rng,
+                    ui,
+                }
+            }
+            a => {
                 //
-                let net_core = NetCore::Server {
-                    listener: {
-                        let x = TcpListener::bind(addr).unwrap();
-                        x.set_nonblocking(true).unwrap();
-                        x
-                    },
-                    clients: vec![],
+                let net_core = if let Some("S") = a {
+                    NetCore::Server {
+                        listener: {
+                            let x = TcpListener::bind(addr).unwrap();
+                            x.set_nonblocking(true).unwrap();
+                            x
+                        },
+                        clients: vec![],
+                    }
+                } else {
+                    NetCore::Solo
                 };
                 let archers = vec![Archer {
                     shot_vel: None,
@@ -392,41 +430,6 @@ impl MyGame {
                     ui,
                 }
             }
-            "C" => {
-                let mut e = {
-                    let x = TcpStream::connect(addr).unwrap();
-                    Endpoint::new(x)
-                };
-                let (archers, baddies, arrows) = match e.recv_clientward().unwrap().unwrap() {
-                    Clientward::Welcome { archers, baddies, arrows } => (archers, baddies, arrows),
-                };
-                e.stream.set_nonblocking(true).unwrap();
-                let net_core = NetCore::Client(e);
-
-                let ui = Ui {
-                    controlling: archers.len() - 1,
-                    config,
-                    camera: Camera::default(),
-                    last_mouse_at: [0.; 2].into(),
-                    rclick_state: None,
-                    lclick_state: None,
-                    pressing: Default::default(),
-                    aim_assist: 0,
-                };
-                MyGame {
-                    net_core,
-                    baddies,
-                    ticks: 0,
-                    archers,
-                    arrows,
-                    stuck_arrows: vec![],
-                    assets: Assets::new(ctx),
-                    doodads: starting_doodads(&mut rng),
-                    rng,
-                    ui,
-                }
-            }
-            _ => panic!("NOT OK"),
         }
     }
 
@@ -511,6 +514,7 @@ impl EventHandler for MyGame {
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
         match &mut self.net_core {
+            NetCore::Solo => {}
             NetCore::Server { listener, clients } => {
                 if let Ok((stream, _addr)) = listener.accept() {
                     let new_archer = Archer {

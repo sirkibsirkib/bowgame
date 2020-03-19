@@ -25,7 +25,7 @@ impl Endpoint {
                     return Ok(Some(msg));
                 }
                 Err(e) => match *e {
-                    bincode::ErrorKind::Io(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    bincode::ErrorKind::Io(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                         // try read from stream
                         let count = self.stream.read_to_end(&mut self.inbuf).map_err(drop)?;
                         if count == 0 {
@@ -33,7 +33,7 @@ impl Endpoint {
                         }
                         // continue
                     }
-                    _ => return Err(()),
+                    e => return Err(println!("err! {:?}", e)),
                 },
             }
         }
@@ -43,4 +43,5 @@ impl Endpoint {
 pub(crate) enum NetCore {
     Server { listener: TcpListener, clients: Vec<Endpoint> },
     Client(Endpoint),
+    Solo,
 }
