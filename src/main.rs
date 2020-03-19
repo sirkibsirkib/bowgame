@@ -8,14 +8,19 @@ use ggez::{
         self, spritebatch::SpriteBatch, Color, DrawParam, FilterMode, Image, Mesh, MeshBuilder,
         Rect, BLACK, WHITE,
     },
-    nalgebra::{self as na, Rotation2, Rotation3, Transform3, Translation3},
     *,
 };
+use nalgebra::{Rotation2, Rotation3, Transform3, Translation3};
 use rand::{
     distributions::{Distribution, Standard},
     rngs::SmallRng,
     Rng, SeedableRng,
 };
+use serde_derive::{Deserialize, Serialize};
+use std::io::Read;
+use std::net::SocketAddr;
+use std::net::TcpListener;
+use std::net::TcpStream;
 
 #[derive(Default)]
 struct Pressing {
@@ -48,33 +53,23 @@ mod assets;
 use assets::*;
 mod helper;
 use helper::*;
+mod net;
+use net::*;
 
 fn main() {
-    // let mut args = std::env::args();
-    // args.next().unwrap();
-    // let addr: SocketAddr = args.next().unwrap().parse().unwrap();
-    // println!("addr {:?}", addr);
-    // let (n, am_server) = match args.next().unwrap().as_ref() {
-    //     "S" => (std::net::TcpListener::bind(addr).unwrap().accept().unwrap().0, true),
-    //     "C" => (std::net::TcpStream::connect(addr).unwrap(), false),
-    //     _ => panic!("NOT OK"),
-    // };
-    // n.set_nonblocking(true).unwrap();
-    let am_server = true;
-    // Make a Context.
     let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
         .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
         .build()
         .unwrap();
     ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
-    let mut my_game = MyGame::new(&mut ctx, am_server);
+    let mut my_game = MyGame::new(&mut ctx);
     event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
 }
 
-type Pt2 = na::Point2<f32>;
-type Pt3 = na::Point3<f32>;
-type Vec2 = na::Vector2<f32>;
-type Vec3 = na::Vector3<f32>;
+type Pt2 = nalgebra::Point2<f32>;
+type Pt3 = nalgebra::Point3<f32>;
+type Vec2 = nalgebra::Vector2<f32>;
+type Vec3 = nalgebra::Vector3<f32>;
 
 struct Assets {
     audio: AudioAssets,
@@ -120,12 +115,13 @@ struct Ui {
     config: UiConfig,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 struct Archer {
     entity: Entity,
     shot_vel: Option<Vec3>,
 }
 
-#[derive(serde_derive::Deserialize)]
+#[derive(Deserialize)]
 struct UiConfigSerde {
     up: String,
     down: String,
@@ -147,7 +143,7 @@ struct UiConfig {
     quit: KeyCode,
 }
 struct MyGame {
-    am_server: bool,
+    net_core: NetCore,
     ticks: usize,
     baddies: Vec<Baddie>,
     archers: Vec<Archer>,
@@ -165,13 +161,14 @@ struct LclickState {
     start: Pt2,
     last_pull_level: PullLevel,
 }
+#[derive(Clone, Serialize, Deserialize)]
 struct Baddie {
     target_archer_index: usize,
     entity: Entity,
     stuck_arrows: Vec<Entity>,
     health: f32,
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Entity {
     pos: Pt3,
     vel: Vec3,
@@ -328,7 +325,9 @@ impl PullLevel {
 }
 
 impl MyGame {
-    fn new(ctx: &mut Context, am_server: bool) -> Self {
+    fn new(ctx: &mut Context) -> Self {
+        let mut args = std::env::args();
+        args.next().unwrap(); //skip arg0
         let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
         let config = {
             let s = std::fs::read_to_string("ui_config.toml").unwrap_or_else(|_| {
@@ -340,79 +339,124 @@ impl MyGame {
             let x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
             x.try_into().expect("Failed to parse config toml!")
         };
-        let archers = vec![
-            Archer {
-                shot_vel: None,
-                entity: Entity { pos: [0., 0., 0.].into(), vel: [0.; 3].into() },
-            },
-            Archer {
-                shot_vel: Some(Vec3::new(8., 12., -12.)),
-                entity: Entity { pos: [50., 50., 0.].into(), vel: [0.; 3].into() },
-            },
-            Archer {
-                shot_vel: Some(Vec3::new(-6., 11., -17.)),
-                entity: Entity { pos: [120., 50., 0.].into(), vel: [0.; 3].into() },
-            },
-        ];
-        let ui = Ui {
-            controlling: 0,
-            config,
-            camera: Camera::default(),
-            last_mouse_at: [0.; 2].into(),
-            rclick_state: None,
-            lclick_state: None,
-            pressing: Default::default(),
-            aim_assist: 0,
-        };
-        MyGame {
-            baddies: (0..NUM_BADDIES)
-                .map(|_| {
-                    let mut b = Baddie {
-                        stuck_arrows: vec![],
-                        health: 1.0,
-                        entity: Entity { pos: [0.; 3].into(), vel: [0.; 3].into() },
-                        target_archer_index: 0,
-                    };
-                    Self::reset_baddie(&mut rng, &archers, &mut b);
-                    b
-                })
-                .collect(),
-            am_server,
-            ticks: 0,
-            archers,
-            arrows: vec![],
-            stuck_arrows: vec![],
-            assets: Assets::new(ctx),
-            doodads: starting_doodads(&mut rng),
-            rng,
-            ui,
+        let addr: SocketAddr = args.next().unwrap().parse().unwrap(); // get addr
+        println!("addr {:?}", addr);
+        match args.next().unwrap().as_ref() {
+            "S" => {
+                //
+                let net_core = NetCore::Server {
+                    listener: {
+                        let x = TcpListener::bind(addr).unwrap();
+                        x.set_nonblocking(true).unwrap();
+                        x
+                    },
+                    clients: vec![],
+                };
+                let archers = vec![Archer {
+                    shot_vel: None,
+                    entity: Entity { pos: [0., 0., 0.].into(), vel: [0.; 3].into() },
+                }];
+                let baddies = (0..NUM_BADDIES)
+                    .map(|_| {
+                        let mut b = Baddie {
+                            stuck_arrows: vec![],
+                            health: 1.0,
+                            entity: Entity { pos: [0.; 3].into(), vel: [0.; 3].into() },
+                            target_archer_index: 0,
+                        };
+                        Self::reset_baddie(&mut rng, &archers, &mut b);
+                        b
+                    })
+                    .collect();
+
+                let ui = Ui {
+                    controlling: 0,
+                    config,
+                    camera: Camera::default(),
+                    last_mouse_at: [0.; 2].into(),
+                    rclick_state: None,
+                    lclick_state: None,
+                    pressing: Default::default(),
+                    aim_assist: 0,
+                };
+                MyGame {
+                    net_core,
+                    baddies,
+                    ticks: 0,
+                    archers,
+                    arrows: vec![],
+                    stuck_arrows: vec![],
+                    assets: Assets::new(ctx),
+                    doodads: starting_doodads(&mut rng),
+                    rng,
+                    ui,
+                }
+            }
+            "C" => {
+                let mut e = {
+                    let x = TcpStream::connect(addr).unwrap();
+                    Endpoint::new(x)
+                };
+                let (archers, baddies, arrows) = match e.recv_clientward().unwrap().unwrap() {
+                    Clientward::Welcome { archers, baddies, arrows } => (archers, baddies, arrows),
+                };
+                e.stream.set_nonblocking(true).unwrap();
+                let net_core = NetCore::Client(e);
+
+                let ui = Ui {
+                    controlling: archers.len() - 1,
+                    config,
+                    camera: Camera::default(),
+                    last_mouse_at: [0.; 2].into(),
+                    rclick_state: None,
+                    lclick_state: None,
+                    pressing: Default::default(),
+                    aim_assist: 0,
+                };
+                MyGame {
+                    net_core,
+                    baddies,
+                    ticks: 0,
+                    archers,
+                    arrows,
+                    stuck_arrows: vec![],
+                    assets: Assets::new(ctx),
+                    doodads: starting_doodads(&mut rng),
+                    rng,
+                    ui,
+                }
+            }
+            _ => panic!("NOT OK"),
         }
     }
 
-    fn reset_baddie(rng: &mut SmallRng, archers: &[Archer], b: &mut Baddie) {
-        const SPAWN_DISTANCE: f32 = 1_000.;
+    fn boundary_point(rng: &mut SmallRng, distance: f32, archers: &[Archer]) -> (Pt3, usize) {
         let angle = rng.gen_range(0., PI * 2.);
         let pos_offset =
-            Rotation3::from_axis_angle(&Vec3::z_axis(), angle) * Vec3::new(SPAWN_DISTANCE, 0., 0.);
+            Rotation3::from_axis_angle(&Vec3::z_axis(), angle) * Vec3::new(distance, 0., 0.);
         let index_offset = rng.gen_range(0, archers.len());
         'archer_loop: for i1 in 0..archers.len() {
-            b.target_archer_index = (i1 + index_offset) % archers.len();
-            b.entity.pos = archers[b.target_archer_index].entity.pos + pos_offset;
+            let target_archer_index = (i1 + index_offset) % archers.len();
+            let try_pt = archers[target_archer_index].entity.pos + pos_offset;
             for (i2, archer) in archers.iter().enumerate() {
-                if i2 != b.target_archer_index
-                    && (archer.entity.pos - b.entity.pos).norm() < SPAWN_DISTANCE
-                {
+                if i2 != target_archer_index && (archer.entity.pos - try_pt).norm() < distance {
                     // this spawn point is too close to `archer`! try another.
                     continue 'archer_loop;
                 }
             }
-            // this point is SPAWN_DISTANCE+ away from all archers!
-            b.health = 1.;
-            b.stuck_arrows.clear();
-            return;
+            return (try_pt, target_archer_index);
         }
-        // for SOME archer, an offset of SPAWN_DISTANCE is SPAWN_DISTANCE+ from all archers
+        // for SOME archer, an offset of distance is distance+ from all archers
         unreachable!()
+    }
+
+    fn reset_baddie(rng: &mut SmallRng, archers: &[Archer], b: &mut Baddie) {
+        const SPAWN_DISTANCE: f32 = 1_000.;
+        let (try_pt, target_archer_index) = Self::boundary_point(rng, SPAWN_DISTANCE, archers);
+        b.health = 1.;
+        b.stuck_arrows.clear();
+        b.target_archer_index = target_archer_index;
+        b.entity.pos = try_pt;
     }
 }
 impl EventHandler for MyGame {
@@ -466,6 +510,31 @@ impl EventHandler for MyGame {
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
+        match &mut self.net_core {
+            NetCore::Server { listener, clients } => {
+                if let Ok((stream, _addr)) = listener.accept() {
+                    let new_archer = Archer {
+                        entity: Entity {
+                            pos: Self::boundary_point(&mut self.rng, 80., &self.archers).0,
+                            vel: Vec3::new(0., 0., 0.),
+                        },
+                        shot_vel: None,
+                    };
+                    self.archers.push(new_archer);
+                    let mut e = Endpoint::new(stream);
+                    let c = Clientward::Welcome {
+                        archers: self.archers.clone(),
+                        baddies: self.baddies.clone(),
+                        arrows: self.arrows.clone(),
+                    };
+                    e.send_clientward(&c).unwrap();
+                    clients.push(e);
+                }
+            }
+            NetCore::Client(_) => {
+                //
+            }
+        }
         // rotate camera
         self.ui.camera.world_rot += match self.ui.pressing.clockwise {
             None => 0.,
