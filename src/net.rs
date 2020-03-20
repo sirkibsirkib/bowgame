@@ -123,6 +123,33 @@ pub(crate) enum NetCore {
     Client(Endpoint),
     Solo,
 }
+impl NetCore {
+    pub fn get_listener_and_clients(&mut self) -> Option<(&mut TcpListener, &mut Clients)> {
+        match self {
+            NetCore::Server { listener, clients } => Some((listener, clients)),
+            _ => None,
+        }
+    }
+    pub fn get_listener(&mut self) -> Option<&mut TcpListener> {
+        match self {
+            NetCore::Server { listener, .. } => Some(listener),
+            _ => None,
+        }
+    }
+    pub fn get_clients(&mut self) -> Option<&mut Clients> {
+        match self {
+            NetCore::Server { clients, .. } => Some(clients),
+            _ => None,
+        }
+    }
+    pub fn get_endpoint(&mut self) -> Option<&mut Endpoint> {
+        match self {
+            NetCore::Client(endpoint) => Some(endpoint),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) struct Clients {
     pub endpoints: Vec<Endpoint>,
 }

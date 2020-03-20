@@ -128,6 +128,7 @@ impl TryInto<UiConfig> for UiConfigSerde {
             quit: keycode(&self.quit)?,
             net_mode: self.net_mode.parse()?,
             addr: self.addr.parse().map_err(drop)?,
+            grab_cursor: self.grab_cursor,
         })
     }
 }

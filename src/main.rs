@@ -60,12 +60,31 @@ mod net;
 use net::*;
 
 fn main() {
+    let config: UiConfig = {
+        let s = std::fs::read_to_string("game_config.toml").unwrap_or_else(|_| {
+            panic!(
+                "Couldn't find `config.toml` at current directory: {:?}",
+                std::env::current_dir().ok()
+            )
+        });
+        let mut x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
+        let mut args = std::env::args();
+        let _ = args.next(); //skip arg0
+        if let Some(s) = args.next() {
+            x.addr = s;
+        }
+        if let Some(s) = args.next() {
+            x.net_mode = s;
+        }
+        x.try_into().expect("Failed to parse config toml!")
+    };
+    println!("addr: {:?} net_mode {:?}", &config.addr, &config.net_mode);
     let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
         .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
         .build()
         .unwrap();
-    ggez::input::mouse::set_cursor_grabbed(&mut ctx, true).unwrap();
-    let mut my_game = MyGame::new(&mut ctx);
+    ggez::input::mouse::set_cursor_grabbed(&mut ctx, config.grab_cursor).unwrap();
+    let mut my_game = MyGame::new(&mut ctx, config);
     event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
 }
 
@@ -136,11 +155,13 @@ struct UiConfigSerde {
     quit: String,
     net_mode: String,
     addr: String,
+    grab_cursor: bool,
 }
 #[derive(Copy, Clone, Debug)]
 enum NetMode {
     Server,
     Client,
+    Solo,
 }
 impl FromStr for NetMode {
     type Err = ();
@@ -148,6 +169,7 @@ impl FromStr for NetMode {
         Ok(match s {
             "Server" => NetMode::Server,
             "Client" => NetMode::Client,
+            "Solo" => NetMode::Solo,
             _ => return Err(()),
         })
     }
@@ -163,6 +185,7 @@ struct UiConfig {
     quit: KeyCode,
     net_mode: NetMode,
     addr: SocketAddr,
+    grab_cursor: bool,
 }
 struct MyGame {
     net_core: NetCore,
@@ -318,31 +341,13 @@ impl PullLevel {
 }
 
 impl MyGame {
-    fn new(ctx: &mut Context) -> Self {
+    fn new(ctx: &mut Context, config: UiConfig) -> Self {
         let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
-        let config: UiConfig = {
-            let s = std::fs::read_to_string("ui_config.toml").unwrap_or_else(|_| {
-                panic!(
-                    "Couldn't find `ui_config.toml` at current directory: {:?}",
-                    std::env::current_dir().ok()
-                )
-            });
-            let x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
-            x.try_into().expect("Failed to parse config toml!")
-        };
-        let mut args = std::env::args();
-        let _ = args.next(); //skip arg0
-        let addr: SocketAddr =
-            args.next().map(|s| s.parse().expect("BAD ADDR FLAG! (pos 1)")).unwrap_or(config.addr);
-        let net_mode: NetMode = args
-            .next()
-            .map(|s| s.parse().expect("BAD NET MODE FLAG! (pos 1)"))
-            .unwrap_or(config.net_mode);
-        println!("addr: {:?} net_mode {:?}", &addr, &net_mode);
-        match net_mode {
+
+        match config.net_mode {
             NetMode::Client => {
                 let mut e = {
-                    let x = TcpStream::connect(addr).unwrap();
+                    let x = TcpStream::connect(config.addr).unwrap();
                     Endpoint::new(x)
                 };
                 let (archers, baddies, arrows) = match e.recv::<Clientward>().unwrap().unwrap() {
@@ -377,15 +382,17 @@ impl MyGame {
                     ui,
                 }
             }
-            NetMode::Server => {
-                //
-                let net_core = NetCore::Server {
-                    listener: {
-                        let x = TcpListener::bind(addr).unwrap();
-                        x.set_nonblocking(true).unwrap();
-                        x
+            NetMode::Server | NetMode::Solo => {
+                let net_core = match config.net_mode {
+                    NetMode::Server => NetCore::Server {
+                        listener: {
+                            let x = TcpListener::bind(config.addr).unwrap();
+                            x.set_nonblocking(true).unwrap();
+                            x
+                        },
+                        clients: Clients { endpoints: vec![] },
                     },
-                    clients: Clients { endpoints: vec![] },
+                    _ => NetCore::Solo,
                 };
                 let archers = vec![Archer {
                     shot_vel: None,
@@ -427,7 +434,6 @@ impl MyGame {
                     ui,
                 }
             }
-            _ => panic!("BAD ARGS"),
         }
     }
 
@@ -555,35 +561,67 @@ impl EventHandler for MyGame {
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
-        // both servers and clients do these things
-        {
-            // rotate camera
-            self.ui.camera.world_rot += match self.ui.pressing.clockwise {
-                None => 0.,
-                Some(true) => -0.05,
-                Some(false) => 0.05,
-            };
-            // gravity and air resistance on arrows
-            for arrow in self.arrows.iter_mut() {
-                arrow.vel = Entity::grav_and_air_resist(arrow.vel);
-            }
-            // move entities in accordance with their velocity
-            for e in self
-                .baddies
-                .iter_mut()
-                .map(|b| &mut b.entity)
-                .chain(self.arrows.iter_mut())
-                .chain(self.archers.iter_mut().map(|b| &mut b.entity))
-            {
-                e.pos += e.vel;
-            }
-            // update camera position
-            self.ui.camera.world_pos = self.archers[self.ui.controlling].entity.pos;
-            self.ticks = self.ticks.wrapping_add(1);
+        // rotate camera
+        self.ui.camera.world_rot += match self.ui.pressing.clockwise {
+            None => 0.,
+            Some(true) => -0.05,
+            Some(false) => 0.05,
+        };
+        // gravity and air resistance on arrows
+        for arrow in self.arrows.iter_mut() {
+            arrow.vel = Entity::grav_and_air_resist(arrow.vel);
         }
-        match &mut self.net_core {
-            NetCore::Solo => {}
-            NetCore::Server { listener, clients } => {
+        // move entities in accordance with their velocity
+        for e in self
+            .baddies
+            .iter_mut()
+            .map(|b| &mut b.entity)
+            .chain(self.arrows.iter_mut())
+            .chain(self.archers.iter_mut().map(|b| &mut b.entity))
+        {
+            e.pos += e.vel;
+        }
+        // update camera position
+        self.ui.camera.world_pos = self.archers[self.ui.controlling].entity.pos;
+        self.ticks = self.ticks.wrapping_add(1);
+
+        if let Some(endpoint) = self.net_core.get_endpoint() {
+            // {Client} not {Solo, Server}
+            while let Some(c) = endpoint.recv::<Clientward>().unwrap() {
+                use Clientward::*;
+                match c {
+                    Welcome { .. } => panic!("already been welcomed!"),
+                    AddArcher(archer) => self.archers.push(archer.into_owned()),
+                    ArrowHitGround { index, arrow } => {
+                        self.assets.audio.twang[self.ticks % 3].play().unwrap();
+                        self.arrows.remove(index);
+                        self.stuck_arrows.push(arrow.into_owned());
+                    }
+                    ArrowHitBaddie { arrow_index, baddie_index, baddie } => {
+                        self.assets.audio.thud[0].play().unwrap();
+                        self.arrows.remove(arrow_index);
+                        self.baddies[baddie_index] = baddie.into_owned(); // overwrite
+                    }
+                    BaddieResync { index, entity } => {
+                        self.baddies[index].entity = entity.into_owned();
+                    }
+                    ArcherEntityResync { index, entity } => {
+                        self.archers[index].entity = entity.into_owned()
+                    }
+                    ArcherShotVelResync { index, shot_vel } => {
+                        self.archers[index].shot_vel = shot_vel.into_owned()
+                    }
+                    ArcherShootArrow { index, entity } => {
+                        self.archers[index].shot_vel = None;
+                        self.arrows.push(entity.into_owned());
+                        self.assets.audio.loose[0].play().unwrap();
+                    }
+                }
+            }
+        } else {
+            // {Solo, Server} not {Client}
+            if let Some((listener, clients)) = self.net_core.get_listener_and_clients() {
+                // {Server} not {Solo, Client}
                 // handle and forward all client requests
                 while let Some((client_index, msg)) = clients.recv_any::<Serverward>().unwrap() {
                     let archer_index = client_index + 1;
@@ -641,90 +679,65 @@ impl EventHandler for MyGame {
                     e.send(&c).unwrap();
                     clients.endpoints.push(e);
                 }
-                // collision events
-                let mut draining = Draining::new(&mut self.arrows);
-                'entry_loop: while let Some(mut entry) = draining.next() {
-                    let arrow: &mut Entity = entry.get_mut();
-                    if arrow.pos[2] >= 0. {
-                        // arrow hit the ground!
-                        self.assets.audio.twang[self.ticks % 3].play().unwrap();
-                        arrow.pos[2] = arrow.pos[2].min(0.);
-                        let (index, arrow) = entry.take();
+            }
+            // collision events
+            let mut draining = Draining::new(&mut self.arrows);
+            'entry_loop: while let Some(mut entry) = draining.next() {
+                let arrow: &mut Entity = entry.get_mut();
+                if arrow.pos[2] >= 0. {
+                    // arrow hit the ground!
+                    self.assets.audio.twang[self.ticks % 3].play().unwrap();
+                    arrow.pos[2] = arrow.pos[2].min(0.);
+                    let (index, arrow) = entry.take();
+                    if let Some(clients) = self.net_core.get_clients() {
+                        // {Server} not {Solo, Client}
                         let c = Clientward::ArrowHitGround { index, arrow: Cow::Borrowed(&arrow) };
                         clients.broadcast(&c).unwrap();
-                        self.stuck_arrows.push(arrow);
-                        // stuck in the ground
-                        continue 'entry_loop;
                     }
-                    for (baddie_index, baddie) in self.baddies.iter_mut().enumerate() {
-                        let mut baddie_dist = arrow.pos.coords - baddie.entity.pos.coords;
-                        baddie_dist[2] *= 0.25;
-                        if baddie_dist.norm() < 32. {
-                            baddie.entity.vel = [0.; 3].into();
-                            baddie.health += arrow.pos[2] * 0.01;
-                            let (arrow_index, mut arrow) = entry.take();
-                            arrow.pos -= baddie.entity.pos.coords;
-                            if baddie.health <= 0. {
-                                Self::reset_baddie(&mut self.rng, &self.archers, baddie);
-                            } else {
-                                baddie.stuck_arrows.push(arrow);
-                            }
+                    self.stuck_arrows.push(arrow);
+                    // stuck in the ground
+                    continue 'entry_loop;
+                }
+                for (baddie_index, baddie) in self.baddies.iter_mut().enumerate() {
+                    let mut baddie_dist = arrow.pos.coords - baddie.entity.pos.coords;
+                    baddie_dist[2] *= 0.25;
+                    if baddie_dist.norm() < 32. {
+                        baddie.entity.vel = [0.; 3].into();
+                        baddie.health += arrow.pos[2] * 0.01;
+                        let (arrow_index, mut arrow) = entry.take();
+                        arrow.pos -= baddie.entity.pos.coords;
+                        if baddie.health <= 0. {
+                            Self::reset_baddie(&mut self.rng, &self.archers, baddie);
+                        } else {
+                            baddie.stuck_arrows.push(arrow);
+                        }
+                        if let Some(clients) = self.net_core.get_clients() {
+                            // {Server} not {Solo, Client}
                             let c = Clientward::ArrowHitBaddie {
                                 arrow_index,
                                 baddie_index,
                                 baddie: Cow::Borrowed(baddie),
                             };
                             clients.broadcast(&c).unwrap();
-                            self.assets.audio.thud[0].play().unwrap();
-                            // stuck in a baddie
-                            continue 'entry_loop;
                         }
-                    }
-                }
-                const TICKS_PER_UPDATE: usize = 64;
-                if self.ticks % TICKS_PER_UPDATE == 0 {
-                    // recompute baddie trajectory
-                    for (index, b) in self.baddies.iter_mut().enumerate() {
-                        b.entity.vel = (self.archers[b.target_archer_index].entity.pos
-                            - b.entity.pos)
-                            .normalize()
-                            * BADDIE_SPEED;
-                        let c =
-                            Clientward::BaddieResync { index, entity: Cow::Borrowed(&b.entity) };
-                        clients.broadcast(&c).unwrap();
+                        self.assets.audio.thud[0].play().unwrap();
+                        // stuck in a baddie
+                        continue 'entry_loop;
                     }
                 }
             }
-            NetCore::Client(endpoint) => {
-                while let Some(c) = endpoint.recv::<Clientward>().unwrap() {
-                    use Clientward::*;
-                    match c {
-                        Welcome { .. } => panic!("already been welcomed!"),
-                        AddArcher(archer) => self.archers.push(archer.into_owned()),
-                        ArrowHitGround { index, arrow } => {
-                            self.assets.audio.twang[self.ticks % 3].play().unwrap();
-                            self.arrows.remove(index);
-                            self.stuck_arrows.push(arrow.into_owned());
-                        }
-                        ArrowHitBaddie { arrow_index, baddie_index, baddie } => {
-                            self.assets.audio.thud[0].play().unwrap();
-                            self.arrows.remove(arrow_index);
-                            self.baddies[baddie_index] = baddie.into_owned(); // overwrite
-                        }
-                        BaddieResync { index, entity } => {
-                            self.baddies[index].entity = entity.into_owned();
-                        }
-                        ArcherEntityResync { index, entity } => {
-                            self.archers[index].entity = entity.into_owned()
-                        }
-                        ArcherShotVelResync { index, shot_vel } => {
-                            self.archers[index].shot_vel = shot_vel.into_owned()
-                        }
-                        ArcherShootArrow { index, entity } => {
-                            self.archers[index].shot_vel = None;
-                            self.arrows.push(entity.into_owned());
-                            self.assets.audio.loose[0].play().unwrap();
-                        }
+            const TICKS_PER_UPDATE: usize = 64;
+            if self.ticks % TICKS_PER_UPDATE == 0 {
+                // recompute baddie trajectory
+                for (index, b) in self.baddies.iter_mut().enumerate() {
+                    b.entity.vel = (self.archers[b.target_archer_index].entity.pos - b.entity.pos)
+                        .normalize()
+                        * BADDIE_SPEED;
+                    if let Some(clients) = self.net_core.get_clients() {
+                        // {Server} not {Solo, Client}
+                        let c =
+                            Clientward::BaddieResync { index, entity: Cow::Borrowed(&b.entity) };
+                        clients.broadcast(&c).unwrap();
                     }
                 }
             }
