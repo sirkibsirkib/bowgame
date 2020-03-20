@@ -518,42 +518,34 @@ impl EventHandler for MyGame {
         _keymods: KeyMods,
         _repeat: bool,
     ) {
+        let Ui { pressing, config, aim_assist, .. } = &mut self.ui;
         match keycode {
-            x if x == self.ui.config.up => self.ui.pressing.down = Some(false),
-            x if x == self.ui.config.left => self.ui.pressing.right = Some(false),
-            x if x == self.ui.config.anticlockwise => self.ui.pressing.clockwise = Some(false),
+            x if x == config.up => pressing.down = Some(false),
+            x if x == config.left => pressing.right = Some(false),
+            x if x == config.anticlockwise => pressing.clockwise = Some(false),
             //
-            x if x == self.ui.config.down => self.ui.pressing.down = Some(true),
-            x if x == self.ui.config.right => self.ui.pressing.right = Some(true),
-            x if x == self.ui.config.clockwise => self.ui.pressing.clockwise = Some(true),
-            x if x == self.ui.config.quit => ggez::event::quit(ctx),
-            x if x == self.ui.config.aim_assist => {
-                self.ui.aim_assist = (self.ui.aim_assist + 1) % 3
-            }
+            x if x == config.down => pressing.down = Some(true),
+            x if x == config.right => pressing.right = Some(true),
+            x if x == config.clockwise => pressing.clockwise = Some(true),
+            x if x == config.quit => ggez::event::quit(ctx),
+            x if x == config.aim_assist => *aim_assist = (*aim_assist + 1) % 3,
             _ => return,
         }
         self.recalculate_dude_vel();
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
+        let Ui { pressing, config, .. } = &mut self.ui;
         match keycode {
-            x if x == self.ui.config.up && self.ui.pressing.down == Some(false) => {
-                self.ui.pressing.down = None
-            }
-            x if x == self.ui.config.left && self.ui.pressing.right == Some(false) => {
-                self.ui.pressing.right = None
-            }
-            x if x == self.ui.config.anticlockwise && self.ui.pressing.clockwise == Some(false) => {
-                self.ui.pressing.clockwise = None
+            x if x == config.up && pressing.down == Some(false) => pressing.down = None,
+            x if x == config.left && pressing.right == Some(false) => pressing.right = None,
+            x if x == config.anticlockwise && pressing.clockwise == Some(false) => {
+                pressing.clockwise = None
             }
             //
-            x if x == self.ui.config.down && self.ui.pressing.down == Some(true) => {
-                self.ui.pressing.down = None
-            }
-            x if x == self.ui.config.right && self.ui.pressing.right == Some(true) => {
-                self.ui.pressing.right = None
-            }
-            x if x == self.ui.config.clockwise && self.ui.pressing.clockwise == Some(true) => {
-                self.ui.pressing.clockwise = None
+            x if x == config.down && pressing.down == Some(true) => pressing.down = None,
+            x if x == config.right && pressing.right == Some(true) => pressing.right = None,
+            x if x == config.clockwise && pressing.clockwise == Some(true) => {
+                pressing.clockwise = None
             }
             _ => return,
         }
