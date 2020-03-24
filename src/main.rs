@@ -3,7 +3,7 @@ use core::f32::consts::PI;
 use core::str::FromStr;
 use ggez::{
     audio::{SoundSource, Source},
-    conf::WindowMode,
+    conf::{FullscreenType, WindowMode},
     event::{EventHandler, KeyCode, KeyMods, MouseButton},
     graphics::{
         self, spritebatch::SpriteBatch, Color, DrawParam, FilterMode, Image, Mesh, MeshBuilder,
@@ -42,7 +42,7 @@ const NUM_BADDIES: usize = 4;
 const SCREEN_TRANS_V2: [f32; 2] = [
     //
     WIN_DIMS[0] * 0.3,
-    WIN_DIMS[1] * 0.7,
+    WIN_DIMS[1] * 0.5,
 ];
 const SCREEN_TRANS_V3: [f32; 3] = [
     //
@@ -135,6 +135,7 @@ struct Ui {
     last_mouse_at: Pt2,
     controlling: usize,
     config: UiConfig,
+    current_fullscreen: FullscreenType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,6 +154,7 @@ struct UiConfigSerde {
     anticlockwise: String,
     aim_assist: String,
     quit: String,
+    cycle_fullscreen: String,
     net_mode: String,
     addr: String,
     grab_cursor: bool,
@@ -183,6 +185,7 @@ struct UiConfig {
     anticlockwise: KeyCode,
     aim_assist: KeyCode,
     quit: KeyCode,
+    cycle_fullscreen: KeyCode,
     net_mode: NetMode,
     addr: SocketAddr,
     grab_cursor: bool,
@@ -360,6 +363,7 @@ impl MyGame {
                 let net_core = NetCore::Client(e);
 
                 let ui = Ui {
+                    current_fullscreen: FullscreenType::Windowed,
                     controlling: archers.len() - 1,
                     config,
                     camera: Camera::default(),
@@ -412,6 +416,7 @@ impl MyGame {
                     .collect();
 
                 let ui = Ui {
+                    current_fullscreen: FullscreenType::Windowed,
                     controlling: 0,
                     config,
                     camera: Camera::default(),
@@ -457,7 +462,7 @@ impl MyGame {
     }
 
     fn reset_baddie(rng: &mut SmallRng, archers: &[Archer], b: &mut Baddie) {
-        const SPAWN_DISTANCE: f32 = 1_000.;
+        const SPAWN_DISTANCE: f32 = 500.;
         let (try_pt, target_archer_index) = Self::boundary_point(rng, SPAWN_DISTANCE, archers);
         b.health = 1.;
         b.stuck_arrows.clear();
@@ -518,7 +523,7 @@ impl EventHandler for MyGame {
         _keymods: KeyMods,
         _repeat: bool,
     ) {
-        let Ui { pressing, config, aim_assist, .. } = &mut self.ui;
+        let Ui { pressing, config, aim_assist, current_fullscreen, .. } = &mut self.ui;
         match keycode {
             x if x == config.up => pressing.down = Some(false),
             x if x == config.left => pressing.right = Some(false),
@@ -527,8 +532,19 @@ impl EventHandler for MyGame {
             x if x == config.down => pressing.down = Some(true),
             x if x == config.right => pressing.right = Some(true),
             x if x == config.clockwise => pressing.clockwise = Some(true),
+            //
             x if x == config.quit => ggez::event::quit(ctx),
             x if x == config.aim_assist => *aim_assist = (*aim_assist + 1) % 3,
+            x if x == config.cycle_fullscreen => {
+                use FullscreenType::*;
+                let n = match current_fullscreen {
+                    Windowed => True,
+                    True => Desktop,
+                    Desktop => Windowed,
+                };
+                *current_fullscreen = n;
+                ggez::graphics::set_fullscreen(ctx, n).unwrap();
+            }
             _ => return,
         }
         self.recalculate_dude_vel();
@@ -672,6 +688,15 @@ impl EventHandler for MyGame {
                     clients.endpoints.push(e);
                 }
             }
+            // // arrow-arrow collisions
+            // let mut i = IterPairs::new(&mut self.arrows);
+            // while let Some([a, b]) = i.next() {
+            //     if (a.pos - b.pos).norm() < 50. {
+            //         let v = (a.vel + b.vel) * 0.5;
+            //         a.vel = v;
+            //         b.vel = v;
+            //     }
+            // }
             // collision events
             let mut draining = Draining::new(&mut self.arrows);
             'entry_loop: while let Some(mut entry) = draining.next() {
@@ -722,14 +747,25 @@ impl EventHandler for MyGame {
             if self.ticks % TICKS_PER_UPDATE == 0 {
                 // recompute baddie trajectory
                 for (index, b) in self.baddies.iter_mut().enumerate() {
-                    b.entity.vel = (self.archers[b.target_archer_index].entity.pos - b.entity.pos)
-                        .normalize()
-                        * BADDIE_SPEED;
+                    let archerward =
+                        self.archers[b.target_archer_index].entity.pos.coords - b.entity.pos.coords;
+                    let n = archerward.norm();
+                    b.entity.vel = archerward * BADDIE_SPEED / n;
                     if let Some(clients) = self.net_core.get_clients() {
                         // {Server} not {Solo, Client}
                         let c =
                             Clientward::BaddieResync { index, entity: Cow::Borrowed(&b.entity) };
                         clients.broadcast(&c).unwrap();
+                    }
+                    if n < 800. && self.rng.gen_bool(0.3) {
+                        // this baddie shoots an arrow
+                        let mut vel = archerward * 0.055;
+                        vel[2] = -n * 0.02;
+                        for i in 0..3 {
+                            vel[i] += self.rng.gen_range(0., 2.0);
+                        }
+                        self.arrows
+                            .push(Entity { pos: b.entity.pos + 4. * Vec3::from(TO_ARMS), vel });
                     }
                 }
             }

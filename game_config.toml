@@ -5,7 +5,9 @@ right = "D"
 clockwise = "E"
 anticlockwise = "Q"
 aim_assist = "Space"
+cycle_fullscreen = "F"
+
 quit = "Escape"
-net_mode = "Client"
-addr = "212.92.107.45:9999"
-grab_cursor = false
+net_mode = "Server"
+addr = "192.168.1.24:20540"
+grab_cursor = true

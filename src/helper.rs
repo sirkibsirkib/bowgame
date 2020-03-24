@@ -126,9 +126,36 @@ impl TryInto<UiConfig> for UiConfigSerde {
             anticlockwise: keycode(&self.anticlockwise)?,
             aim_assist: keycode(&self.aim_assist)?,
             quit: keycode(&self.quit)?,
+            cycle_fullscreen: keycode(&self.cycle_fullscreen)?,
             net_mode: self.net_mode.parse()?,
             addr: self.addr.parse().map_err(drop)?,
             grab_cursor: self.grab_cursor,
         })
+    }
+}
+
+pub(crate) struct IterPairs<'a, T> {
+    v: &'a mut [T],
+    a: usize,
+    b: usize,
+}
+impl<'a, T> IterPairs<'a, T> {
+    pub fn new(v: &'a mut [T]) -> Self {
+        Self { v, a: 0, b: 1 }
+    }
+    pub fn next(&mut self) -> Option<[&mut T; 2]> {
+        if self.b >= self.v.len() {
+            self.a += 1;
+            self.b = self.a + 1;
+        }
+        if self.a >= self.v.len() {
+            None
+        } else {
+            self.b += 1;
+            unsafe {
+                let v2 = &mut *(self.v as *mut [T]);
+                Some([self.v.get_unchecked_mut(self.a), v2.get_unchecked_mut(self.b - 1)])
+            }
+        }
     }
 }
