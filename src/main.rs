@@ -757,16 +757,16 @@ impl EventHandler for MyGame {
                             Clientward::BaddieResync { index, entity: Cow::Borrowed(&b.entity) };
                         clients.broadcast(&c).unwrap();
                     }
-                    if n < 800. && self.rng.gen_bool(0.3) {
-                        // this baddie shoots an arrow
-                        let mut vel = archerward * 0.055;
-                        vel[2] = -n * 0.02;
-                        for i in 0..3 {
-                            vel[i] += self.rng.gen_range(0., 2.0);
-                        }
-                        self.arrows
-                            .push(Entity { pos: b.entity.pos + 4. * Vec3::from(TO_ARMS), vel });
-                    }
+                    // if n < 800. && self.rng.gen_bool(0.3) {
+                    //     // this baddie shoots an arrow
+                    //     let mut vel = archerward * 0.055;
+                    //     vel[2] = -n * 0.02;
+                    //     for i in 0..3 {
+                    //         vel[i] += self.rng.gen_range(0., 2.0);
+                    //     }
+                    //     self.arrows
+                    //         .push(Entity { pos: b.entity.pos + 4. * Vec3::from(TO_ARMS), vel });
+                    // }
                 }
             }
         }
