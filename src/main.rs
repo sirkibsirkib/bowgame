@@ -462,7 +462,7 @@ impl MyGame {
     }
 
     fn reset_baddie(rng: &mut SmallRng, archers: &[Archer], b: &mut Baddie) {
-        const SPAWN_DISTANCE: f32 = 500.;
+        const SPAWN_DISTANCE: f32 = 900.;
         let (try_pt, target_archer_index) = Self::boundary_point(rng, SPAWN_DISTANCE, archers);
         b.health = 1.;
         b.stuck_arrows.clear();
