@@ -2,17 +2,25 @@ use super::*;
 
 /*
 Players configure their game to be one of {Server, Client, Solo}.
+Networked game sessions work by:
+1. all players controlling their own archer's movement,
+   resulting in updates to their peers
+2. all players extrapolating entity positions from fixed velocities of {archers, arrows, baddies}
+3. all players dead-reckon the change in velocity on arrows from gravity
+3. only the server performs collision detection
+4. when creating / destroying entities (eg arrows), server's entity overwrites that of the clients.
 
 >> Solo similarly to a Server without any connected clients, just skipping some steps.
 
 >> Client...
 1. controls their own archer's movments and UPDATES the server.
 2. removes nocked arrows from their bow + REQUESTS the creation of the arrow in-world.
-3. receives UPDATES on creation an
+3. receives UPDATES on creation and destruction of arrows.
 
->> Server hosts the game, and is the authority on:
-1. movement of their own archer
-2. forwarding the position
+>> Server...
+1. UPDATES the movement of their own archer and UPDATES all clients.
+2. receives UPDATES of archer movements and propagates them to self and other clients.
+3. send updates about arrow creation / destruction of arrows.
 */
 
 // message type for Client ==> Server communication
@@ -40,6 +48,11 @@ pub(crate) enum Clientward<'a> {
         baddie_index: usize,
         baddie: Cow<'a, Baddie>,
     },
+    ArcherShootArrow {
+        index: usize,
+        entity: Cow<'a, Entity>,
+    },
+    //////////////
     BaddieResync {
         index: usize,
         entity: Cow<'a, Entity>,
@@ -51,10 +64,6 @@ pub(crate) enum Clientward<'a> {
     ArcherShotVelResync {
         index: usize,
         shot_vel: Cow<'a, Option<Vec3>>,
-    },
-    ArcherShootArrow {
-        index: usize,
-        entity: Cow<'a, Entity>,
     },
 }
 
