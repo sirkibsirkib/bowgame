@@ -61,15 +61,17 @@ use net::*;
 
 fn main() {
     let config: UiConfig = {
+        // create a handle to config file
         let s = std::fs::read_to_string("game_config.toml").unwrap_or_else(|_| {
             panic!(
                 "Couldn't find `config.toml` at current directory: {:?}",
                 std::env::current_dir().ok()
             )
         });
+        // parse config file
         let mut x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
+        // use command line args 1 and 2 to overwrite `addr` and `net_mode` config fields if they are provided
         let mut args = std::env::args();
-        let _ = args.next(); //skip arg0
         if let Some(s) = args.next() {
             x.addr = s;
         }
@@ -79,15 +81,22 @@ fn main() {
         x.try_into().expect("Failed to parse config toml!")
     };
     println!("addr: {:?} net_mode {:?}", &config.addr, &config.net_mode);
+    // build the GGEZ context object. manages the windows, event loop, etc.
     let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
         .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
         .build()
         .unwrap();
+    // grab the cursor if config says to do so
     ggez::input::mouse::set_cursor_grabbed(&mut ctx, config.grab_cursor).unwrap();
+    // create master game state object
     let mut my_game = MyGame::new(&mut ctx, config);
+    // invoke GGEZ game loop. the magic happens at `impl EventHandler for MyGame`
     event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
 }
 
+// define a load of types for storing game data
+
+// points and vectors in screen (2D) and world (3D) spaces.
 type Pt2 = nalgebra::Point2<f32>;
 type Pt3 = nalgebra::Point3<f32>;
 type Vec2 = nalgebra::Vector2<f32>;
@@ -165,17 +174,6 @@ enum NetMode {
     Client,
     Solo,
 }
-impl FromStr for NetMode {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "Server" => NetMode::Server,
-            "Client" => NetMode::Client,
-            "Solo" => NetMode::Solo,
-            _ => return Err(()),
-        })
-    }
-}
 struct UiConfig {
     up: KeyCode,
     down: KeyCode,
@@ -233,7 +231,19 @@ enum PullLevel {
 }
 /////////////////// IMPL IMPL IMPL IMPL IMPL
 
+impl FromStr for NetMode {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "Server" => NetMode::Server,
+            "Client" => NetMode::Client,
+            "Solo" => NetMode::Solo,
+            _ => return Err(()),
+        })
+    }
+}
 impl DoodadKind {
+    // compute the rectangle for texture region of this doodad
     fn rect(&self) -> Rect {
         let x = match self {
             Self::Bush => 0.0,
@@ -246,6 +256,8 @@ impl DoodadKind {
 }
 impl Entity {
     #[inline]
+    // given a world-space vector, apply gravity and air resistance to it
+    // (used for arrows only)
     fn grav_and_air_resist(mut v: Vec3) -> Vec3 {
         // gravity
         v += Pt3::new(0., 0., 0.5).coords;
@@ -260,6 +272,8 @@ impl Default for Camera {
     }
 }
 impl Camera {
+    // query: "is the given archer facing RIGHT in screen space?"
+    // (used for drawing the archer facing left/right)
     fn archer_facing_right(&self, archer: &Archer) -> bool {
         archer
             .shot_vel
@@ -329,6 +343,9 @@ impl PullLevel {
             _ => true,
         }
     }
+    // given the initial velocity of a shot arrow in world-space,
+    // categorize the "pull level" of the bow shooting it.
+    // used to draw the bow and determine if draw power is too low/high.
     fn from_shot_vel(shot_vel: Vec3) -> Self {
         const DIFF: f32 = MAX_VEL - MIN_VEL;
         use PullLevel::*;
