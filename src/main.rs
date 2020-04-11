@@ -153,6 +153,7 @@ struct Archer {
     shot_vel: Option<Vec3>,
 }
 
+// user-facing Ui type: (1) fields are strings to be human-readable, and (2) serializable
 #[derive(Deserialize)]
 struct UiConfigSerde {
     up: String,
@@ -174,6 +175,7 @@ enum NetMode {
     Client,
     Solo,
 }
+// game-facing Ui type
 struct UiConfig {
     up: KeyCode,
     down: KeyCode,
@@ -190,15 +192,15 @@ struct UiConfig {
 }
 struct MyGame {
     net_core: NetCore,
-    ticks: usize,
-    baddies: Vec<Baddie>,
-    archers: Vec<Archer>,
-    arrows: Vec<Entity>,
-    stuck_arrows: Vec<Entity>,
-    assets: Assets,
-    doodads: Vec<Doodad>,
-    rng: SmallRng,
-    ui: Ui,
+    ticks: usize, // ever-counting wrapping integer. used as a super basic "random" seed for animations etc.
+    baddies: Vec<Baddie>, // list of bad guys (rocks)
+    archers: Vec<Archer>, // list of archers
+    arrows: Vec<Entity>, // all arrows currently in flight (have velocity etc.)
+    stuck_arrows: Vec<Entity>, // all arrows in the ground
+    assets: Assets, // store for the game's assets. Immutable after setup
+    doodads: Vec<Doodad>, // doodad instances. Immutable after setup.
+    rng: SmallRng, // random number generator for placing enemies etc. NOT synced between players
+    ui: Ui,       // player input/output state. Including button presses and camera.
 }
 struct RclickState {
     anchor_angle: f32,
@@ -459,7 +461,10 @@ impl MyGame {
         }
     }
 
+    // given the set of archers, and `distance`, compute a point on the ground that is
+    // that is exactly `distance` away from a random archer, and at least `distance` away from ALL archers.
     fn boundary_point(rng: &mut SmallRng, distance: f32, archers: &[Archer]) -> (Pt3, usize) {
+        assert!(!archers.is_empty());
         let angle = rng.gen_range(0., PI * 2.);
         let pos_offset =
             Rotation3::from_axis_angle(&Vec3::z_axis(), angle) * Vec3::new(distance, 0., 0.);
@@ -487,9 +492,11 @@ impl MyGame {
         b.entity.pos = try_pt;
     }
 
-    fn recalculate_dude_vel(&mut self) {
+    // recalculate the velocity of the archer this player controls
+    fn recalculate_controlled_vel(&mut self) {
         let index = self.ui.controlling;
         let archer = &mut self.archers[index];
+        // compute velocity in SCREEN SPACE
         let vel2 = Vec2::new(
             match self.ui.pressing.right {
                 Some(true) => 1.,
@@ -497,25 +504,30 @@ impl MyGame {
                 _ => 0.,
             },
             match self.ui.pressing.down {
-                Some(true) => 1.,
-                Some(false) => -1.,
+                Some(true) => 1. / ROOT_OF_2,
+                Some(false) => -1. / ROOT_OF_2,
                 _ => 0.,
             },
         );
+        // "unit speed" before being scaled
         let vel3 = self.ui.camera.vec_2_to_3(vel2);
 
+        // slow x,y walk speeds if BOTH x,y are nonzero (walking diagonally)
         let mut speed = if self.ui.pressing.down.is_some() && self.ui.pressing.right.is_some() {
             WALK_SPEED / ROOT_OF_2
         } else {
             WALK_SPEED
         };
         if let Some(shot_vel) = archer.shot_vel {
+            // slow speed further if aiming an arrow
             speed *= 0.6;
             let backpedaling = shot_vel.dot(&vel3) < 0.;
             if backpedaling {
+                // slow speed further if walking backwards while aiming forwards
                 speed *= 0.4;
             }
         }
+        // overwrite controlled archer's speed with scaled "unit speed".
         archer.entity.vel = vel3 * speed;
         match &mut self.net_core {
             NetCore::Solo => (),
@@ -564,7 +576,7 @@ impl EventHandler for MyGame {
             }
             _ => return,
         }
-        self.recalculate_dude_vel();
+        self.recalculate_controlled_vel();
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         let Ui { pressing, config, .. } = &mut self.ui;
@@ -582,7 +594,7 @@ impl EventHandler for MyGame {
             }
             _ => return,
         }
-        self.recalculate_dude_vel();
+        self.recalculate_controlled_vel();
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
@@ -814,6 +826,7 @@ impl EventHandler for MyGame {
             MouseButton::Left => {
                 if let Some(arrow) =
                     self.archers[self.ui.controlling].shot_vel.take().and_then(|shot_vel| {
+                        // compute the velocity vector of the arrow shot in current state
                         self.ui.lclick_state = None;
                         match shot_vel.norm_squared() {
                             x if x < MIN_VEL.sqr() => None,
@@ -826,6 +839,7 @@ impl EventHandler for MyGame {
                         }
                     })
                 {
+                    // yes! we shoot an arrow with entity data `arrow`
                     match &mut self.net_core {
                         NetCore::Client(endpoint) => endpoint
                             .send(&Serverward::ArcherShootArrow(Cow::Borrowed(&arrow)))
@@ -854,6 +868,7 @@ impl EventHandler for MyGame {
     fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32, _dx: f32, _dy: f32) {
         let mouse_at: Pt2 = [x, y].into();
         if self.ui.last_mouse_at == mouse_at {
+            // optimization and avoid spamming bow taut noises
             return;
         }
         self.ui.last_mouse_at = mouse_at;
@@ -864,6 +879,9 @@ impl EventHandler for MyGame {
                 (entity as &Entity, shot_vel)
             })
         {
+            // destructured and matched:
+            // 1. some left-clicking state, and
+            // 2. the state of the controlled archer
             let line_v = start.coords - mouse_at.coords;
             let pull_v = line_v * 0.11;
             let duderel = self.ui.camera.pt_3_to_2(entity.pos).coords - mouse_at.coords;
@@ -871,7 +889,10 @@ impl EventHandler for MyGame {
             let proj_v = pull_v * proj_scalar;
             let perp_v = proj_v - duderel;
             let z = perp_v.norm() * -0.07;
+            // update recomputed shot_vel: the velocity vector an arrow released in this state gets
+            // ... first in 2d space (along the floor)
             *shot_vel = self.ui.camera.vec_2_to_3(pull_v);
+            // ... and then overwriting the vertical velocity
             shot_vel[2] = z;
 
             let new_pull_level = PullLevel::from_shot_vel(*shot_vel);
@@ -885,6 +906,7 @@ impl EventHandler for MyGame {
                         PullLevel::Max => 3,
                     })
                 }
+                // stop previous taut noise, play the new one
                 if let Some(index) = pl_to_audio_index(*last_pull_level) {
                     self.assets.audio.taut[index].stop();
                 }
@@ -925,10 +947,13 @@ impl EventHandler for MyGame {
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         const DUDE_SCALE: [f32; 2] = [2.; 2];
         const ARROW_SCALE: f32 = 1.7;
-        const PULL_BAD_ANGLE: f32 = -0.4;
+        const PULL_LIMP_ANGLE: f32 = -0.4;
         const FRAME_TICKS: usize = 6;
 
+        // reset the screen's pixels to green
         graphics::clear(ctx, GREEN);
+        // compute 'x' field of texture rectangle for archers.
+        // as a function of "time" (self.ticks) this results in a looping animation.
         let archer_walk_x = match self.ticks % (FRAME_TICKS * 6) {
             x if x < FRAME_TICKS * 1 => 0.0,
             x if x < FRAME_TICKS * 2 => 0.2,
@@ -939,6 +964,7 @@ impl EventHandler for MyGame {
         };
         for (archer_index, a) in self.archers.iter().enumerate() {
             let right_facing = self.ui.camera.archer_facing_right(a);
+            // incremetally compute the DrawParam for drawing this archer's texture.
             let facing_dude_scale = [
                 //
                 DUDE_SCALE[0] * if right_facing { 1. } else { -1. },
@@ -958,8 +984,10 @@ impl EventHandler for MyGame {
                 Rect { x, y: 0., h: 0.2, w: 0.2 }
             };
             let (arm_src, arm_angle, arrow_angle) = if let Some(shot_vel) = a.shot_vel {
-                // drawing the bow
+                // this archer is drawing their bow
                 let pull_level = PullLevel::from_shot_vel(shot_vel);
+                // compute texture rectangle (i.e. which sprite in the sheet)
+                // ALL archers' arms are drawn in according to the angle they are aiming
                 let arm_src = {
                     use PullLevel::*;
                     let x = match pull_level {
@@ -975,18 +1003,22 @@ impl EventHandler for MyGame {
                     let x = Camera::rot_of_xy(self.ui.camera.vec_3_to_2(shot_vel));
                     (if right_facing { x } else { x + PI }, Some(x))
                 } else if right_facing {
-                    (PULL_BAD_ANGLE, Some(-PULL_BAD_ANGLE))
+                    // "PULL_LIMP_ANGLE" is the angle you hold your bow limply (not aiming)
+                    // used when player has a BAD pull (too little or too much)
+                    (PULL_LIMP_ANGLE, Some(-PULL_LIMP_ANGLE))
                 } else {
-                    (-PULL_BAD_ANGLE, Some(PULL_BAD_ANGLE + PI))
+                    (-PULL_LIMP_ANGLE, Some(PULL_LIMP_ANGLE + PI))
                 };
 
                 if archer_index == self.ui.controlling {
+                    // the player controls this archer! draw extra UI stuff
                     let lclick_state = self.ui.lclick_state.as_ref().unwrap();
                     let end: Pt2 = ggez::input::mouse::position(ctx).into();
                     let diff = end - lclick_state.start;
                     let difflen = diff.norm();
                     let diffang = Camera::rot_of_xy(diff);
                     let color = if lclick_state.last_pull_level.can_shoot() { WHITE } else { RED };
+                    // draw line that player uses to "pull" the bow. White if they COULD loose an arrow
                     graphics::draw(
                         ctx,
                         &self.assets.tex.unit_line,
@@ -999,6 +1031,8 @@ impl EventHandler for MyGame {
                         },
                     )?;
                     if self.ui.aim_assist >= 1 {
+                        // minimal aim assist is toggled.
+                        // draw the little angle and pitch line overlay
                         let aim_e_v3 = a.entity.pos + shot_vel * 7.;
                         let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
                         let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
@@ -1030,6 +1064,8 @@ impl EventHandler for MyGame {
                             },
                         )?;
                         if self.ui.aim_assist >= 2 {
+                            // aim assist is set to max. predict the arrow's impact location.
+                            // simple solution: create an arrow entity and simulate its flight WHILE its not hit the ground.
                             let mut arrow = Entity {
                                 vel: shot_vel,
                                 pos: a.entity.pos - Vec3::new(0., 0., 32.),
@@ -1039,6 +1075,7 @@ impl EventHandler for MyGame {
                                 arrow.pos += arrow.vel;
                             }
                             arrow.pos[2] = 0.;
+                            // ... and draw a cross on the floor where it impacted
                             graphics::draw(
                                 ctx,
                                 &self.assets.tex.cross,
@@ -1054,25 +1091,29 @@ impl EventHandler for MyGame {
                 (arm_src, arm_angle, arrow_angle)
             } else {
                 let arm_src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
-                let arm_angle = if right_facing { PULL_BAD_ANGLE } else { -PULL_BAD_ANGLE };
+                let arm_angle = if right_facing { PULL_LIMP_ANGLE } else { -PULL_LIMP_ANGLE };
                 (arm_src, arm_angle, None)
             };
+            // draw archer layer 1/4 (back arm)
             graphics::draw(
                 ctx,
                 &self.assets.tex.archer_back,
                 DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
             )?;
+            // draw archer layer 2/4 (body)
             graphics::draw(
                 ctx,
                 &self.assets.tex.archer,
                 DrawParam { src: main_src, ..dude_param },
             )?;
+            // draw archer layer 3/4 (front arm + bow)
             graphics::draw(
                 ctx,
                 &self.assets.tex.archer_front,
                 DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
             )?;
             if let Some(arrow_angle) = arrow_angle {
+                // draw archer layer 4/4 (nocked arrow)
                 let p = DrawParam {
                     dest: (dude_arm_pos + Vec2::new(0., -5.0)).into(),
                     src: Rect { x: 0., y: 0., w: 1., h: 0.25 },
@@ -1087,7 +1128,7 @@ impl EventHandler for MyGame {
         fn flatten(p: Pt3) -> Pt3 {
             [p[0], p[1], 0.].into()
         }
-        // doodads
+        // draw grasses rocks etc. using INSTANCED RENDERING
         for doodad in self.doodads.iter() {
             self.assets.tex.doodads.add(DrawParam {
                 src: doodad.kind.rect(),
@@ -1096,9 +1137,11 @@ impl EventHandler for MyGame {
                 ..Default::default()
             });
         }
+        // define a closure for adding an arrow instance
+        // to the arrow batch (for instanced rendering on GPU)
         let arrow_draw =
             |y: f32, arrow: &Entity, arrow_batch: &mut SpriteBatch, camera: &Camera| {
-                // shadow
+                // arrow's shadow on the ground
                 let src = Rect { x: 0., y, w: 1., h: 0.25 };
                 let dest = camera.pt_3_to_2(flatten(arrow.pos));
                 let [rotation, len] = camera.vel_to_rot_len_shadow(arrow.vel);
@@ -1111,7 +1154,7 @@ impl EventHandler for MyGame {
                     offset: [0.95, 0.5].into(),
                     ..Default::default()
                 };
-                // real
+                // arrow in the air
                 arrow_batch.add(p);
                 let dest = camera.pt_3_to_2(arrow.pos);
                 let [rotation, len] = camera.vel_to_rot_len(arrow.vel);
@@ -1125,7 +1168,7 @@ impl EventHandler for MyGame {
                 };
                 arrow_batch.add(p);
             };
-        // baddies
+        // draw baddies in the world
         for b in &self.baddies {
             self.assets.tex.doodads.add(DrawParam {
                 src: DoodadKind::Rock.rect(),
@@ -1141,17 +1184,22 @@ impl EventHandler for MyGame {
                 arrow_draw(0.25, &a, &mut self.assets.tex.arrow_batch, &self.ui.camera);
             }
         }
-
+        // invoke the `arrow_draw` closure for all arrows in flight
         for arrow in self.arrows.iter() {
             arrow_draw(0.00, arrow, &mut self.assets.tex.arrow_batch, &self.ui.camera);
         }
+        // invoke the `arrow_draw` closure for all arrows on thr ground
+        // use a different texture rectangle (headless arrows because stuck in the target)
         for arrow in self.stuck_arrows.iter() {
             arrow_draw(0.25, arrow, &mut self.assets.tex.arrow_batch, &self.ui.camera);
         }
+        // fire off instanced rendering on GPU (synchronous)
         graphics::draw(ctx, &self.assets.tex.arrow_batch, DrawParam::default())?;
         graphics::draw(ctx, &self.assets.tex.doodads, DrawParam::default())?;
+        // ... and clear the batch again for use in the next frame
         self.assets.tex.arrow_batch.clear();
         self.assets.tex.doodads.clear();
+        // finalize.
         graphics::present(ctx)
     }
 }

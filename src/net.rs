@@ -1,5 +1,21 @@
 use super::*;
 
+/*
+Players configure their game to be one of {Server, Client, Solo}.
+
+>> Solo similarly to a Server without any connected clients, just skipping some steps.
+
+>> Client...
+1. controls their own archer's movments and UPDATES the server.
+2. removes nocked arrows from their bow + REQUESTS the creation of the arrow in-world.
+3. receives UPDATES on creation an
+
+>> Server hosts the game, and is the authority on:
+1. movement of their own archer
+2. forwarding the position
+*/
+
+// message type for Client ==> Server communication
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub(crate) enum Serverward<'a> {
     ArcherEntityResync(Cow<'a, Entity>),

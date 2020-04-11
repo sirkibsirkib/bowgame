@@ -1,6 +1,9 @@
-// invariant: self.0.next_index - 1 is within bounds of self.0.v
 use super::*;
 
+// A helper iterator type that combines Vec::drain with Vec::retain,
+// allowing elements to be iterated over in-place and be removed during iteration.
+
+// invariant: self.0.next_index - 1 is within bounds of self.0.v
 pub struct Entry<'vec, 'entry, T> {
     draining: &'entry mut Draining<'vec, T>,
 }
@@ -131,31 +134,5 @@ impl TryInto<UiConfig> for UiConfigSerde {
             addr: self.addr.parse().map_err(drop)?,
             grab_cursor: self.grab_cursor,
         })
-    }
-}
-
-pub(crate) struct IterPairs<'a, T> {
-    v: &'a mut [T],
-    a: usize,
-    b: usize,
-}
-impl<'a, T> IterPairs<'a, T> {
-    pub fn new(v: &'a mut [T]) -> Self {
-        Self { v, a: 0, b: 1 }
-    }
-    pub fn next(&mut self) -> Option<[&mut T; 2]> {
-        if self.b >= self.v.len() {
-            self.a += 1;
-            self.b = self.a + 1;
-        }
-        if self.a >= self.v.len() {
-            None
-        } else {
-            self.b += 1;
-            unsafe {
-                let v2 = &mut *(self.v as *mut [T]);
-                Some([self.v.get_unchecked_mut(self.a), v2.get_unchecked_mut(self.b - 1)])
-            }
-        }
     }
 }
