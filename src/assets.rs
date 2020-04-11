@@ -1,7 +1,5 @@
 use super::*;
 
-pub const BROWN: Color = Color { r: 0.5, g: 0.2, b: 0.2, a: 1. };
-
 pub const RED: Color = Color { r: 1., g: 0., b: 0., a: 1. };
 pub const GREEN: Color = Color { r: 0.1, g: 0.4, b: 0.1, a: 1. };
 pub const BLUE: Color = Color { r: 0., g: 0., b: 1., a: 1. };
