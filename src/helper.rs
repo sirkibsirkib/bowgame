@@ -53,7 +53,7 @@ pub(crate) trait Squarable: core::ops::Mul + Copy {
 impl<T: core::ops::Mul + Copy> Squarable for T {}
 
 impl TryInto<UiConfig> for UiConfigSerde {
-    type Error = ();
+    type Error = String;
     fn try_into(self) -> Result<UiConfig, Self::Error> {
         fn keycode(k: &str) -> Result<KeyCode, <UiConfigSerde as TryInto<UiConfig>>::Error> {
             Ok(match k {
@@ -117,7 +117,7 @@ impl TryInto<UiConfig> for UiConfigSerde {
                 "Down" => KeyCode::Down,
                 "Back" => KeyCode::Back,
                 "Return" => KeyCode::Return,
-                _ => return Err(()),
+                _ => return Err(format!("bad keycode {:?}", k)),
             })
         }
         Ok(UiConfig {
@@ -130,8 +130,11 @@ impl TryInto<UiConfig> for UiConfigSerde {
             aim_assist: keycode(&self.aim_assist)?,
             quit: keycode(&self.quit)?,
             cycle_fullscreen: keycode(&self.cycle_fullscreen)?,
-            net_mode: self.net_mode.parse()?,
-            addr: self.addr.parse().map_err(drop)?,
+            net_mode: self
+                .net_mode
+                .parse()
+                .map_err(|_| format!("bad net mode {}", self.net_mode))?,
+            addr: self.addr.parse().map_err(|_| format!("bad net {}", self.addr))?,
             grab_cursor: self.grab_cursor,
         })
     }

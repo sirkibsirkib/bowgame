@@ -70,8 +70,10 @@ fn main() {
         });
         // parse config file
         let mut x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
+        println!("{:?}", &x);
         // use command line args 1 and 2 to overwrite `addr` and `net_mode` config fields if they are provided
         let mut args = std::env::args();
+        args.next(); // skip first arg
         if let Some(s) = args.next() {
             x.addr = s;
         }
@@ -154,7 +156,7 @@ struct Archer {
 }
 
 // user-facing Ui type: (1) fields are strings to be human-readable, and (2) serializable
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct UiConfigSerde {
     up: String,
     down: String,
@@ -545,6 +547,23 @@ impl MyGame {
     }
 }
 impl EventHandler for MyGame {
+    fn gamepad_button_down_event(
+        &mut self,
+        _ctx: &mut Context,
+        btn: ggez::event::Button,
+        id: ggez::event::GamepadId,
+    ) {
+        dbg!(btn, id);
+    }
+    fn gamepad_axis_event(
+        &mut self,
+        _ctx: &mut Context,
+        axis: ggez::event::Axis,
+        value: f32,
+        id: ggez::event::GamepadId,
+    ) {
+        dbg!(axis, value, id);
+    }
     fn key_down_event(
         &mut self,
         ctx: &mut Context,
