@@ -8,6 +8,6 @@ aim_assist = "Space"
 cycle_fullscreen = "F"
 
 quit = "Escape"
-net_mode = "Server"
-addr = "192.168.1.24:20450"
+net_mode = "Solo"
+addr = "127.0.0.1:8888"
 grab_cursor = true

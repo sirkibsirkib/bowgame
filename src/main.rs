@@ -58,45 +58,7 @@ mod helper;
 use helper::*;
 mod net;
 use net::*;
-
-fn main() {
-    let config: UiConfig = {
-        // create a handle to config file
-        let s = std::fs::read_to_string("game_config.toml").unwrap_or_else(|_| {
-            panic!(
-                "Couldn't find `config.toml` at current directory: {:?}",
-                std::env::current_dir().ok()
-            )
-        });
-        // parse config file
-        let mut x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
-        println!("{:?}", &x);
-        // use command line args 1 and 2 to overwrite `addr` and `net_mode` config fields if they are provided
-        let mut args = std::env::args();
-        args.next(); // skip first arg
-        if let Some(s) = args.next() {
-            x.addr = s;
-        }
-        if let Some(s) = args.next() {
-            x.net_mode = s;
-        }
-        x.try_into().expect("Failed to parse config toml!")
-    };
-    println!("addr: {:?} net_mode {:?}", &config.addr, &config.net_mode);
-    // build the GGEZ context object. manages the windows, event loop, etc.
-    let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
-        .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
-        .build()
-        .unwrap();
-    // grab the cursor if config says to do so
-    ggez::input::mouse::set_cursor_grabbed(&mut ctx, config.grab_cursor).unwrap();
-    // create master game state object
-    let mut my_game = MyGame::new(&mut ctx, config);
-    // invoke GGEZ game loop. the magic happens at `impl EventHandler for MyGame`
-    event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
-}
-
-// define a load of types for storing game data
+mod draw;
 
 // points and vectors in screen (2D) and world (3D) spaces.
 type Pt2 = nalgebra::Point2<f32>;
@@ -137,61 +99,6 @@ struct Camera {
     world_pos: Pt3,
     world_rot: f32,
 }
-struct Ui {
-    camera: Camera,
-    lclick_state: Option<LclickState>,
-    rclick_state: Option<RclickState>,
-    pressing: Pressing,
-    aim_assist: u8,
-    last_mouse_at: Pt2,
-    controlling: usize,
-    config: UiConfig,
-    current_fullscreen: FullscreenType,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Archer {
-    entity: Entity,
-    shot_vel: Option<Vec3>,
-}
-
-// user-facing Ui type: (1) fields are strings to be human-readable, and (2) serializable
-#[derive(Debug, Deserialize)]
-struct UiConfigSerde {
-    up: String,
-    down: String,
-    left: String,
-    right: String,
-    clockwise: String,
-    anticlockwise: String,
-    aim_assist: String,
-    quit: String,
-    cycle_fullscreen: String,
-    net_mode: String,
-    addr: String,
-    grab_cursor: bool,
-}
-#[derive(Copy, Clone, Debug)]
-enum NetMode {
-    Server,
-    Client,
-    Solo,
-}
-// game-facing Ui type
-struct UiConfig {
-    up: KeyCode,
-    down: KeyCode,
-    left: KeyCode,
-    right: KeyCode,
-    clockwise: KeyCode,
-    anticlockwise: KeyCode,
-    aim_assist: KeyCode,
-    quit: KeyCode,
-    cycle_fullscreen: KeyCode,
-    net_mode: NetMode,
-    addr: SocketAddr,
-    grab_cursor: bool,
-}
 struct MyGame {
     net_core: NetCore,
     ticks: usize, // ever-counting wrapping integer. used as a super basic "random" seed for animations etc.
@@ -220,10 +127,21 @@ struct Baddie {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entity {
+    // 4*3*2 = 24 bytes
     pos: Pt3,
     vel: Vec3,
 }
-
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Archer {
+    entity: Entity,
+    shot_vel: Option<Vec3>,
+}
+#[derive(Copy, Clone, Debug)]
+enum NetMode {
+    Server,
+    Client,
+    Solo,
+}
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum PullLevel {
     TooLittle,
@@ -233,8 +151,87 @@ enum PullLevel {
     Max,
     TooMuch,
 }
-/////////////////// IMPL IMPL IMPL IMPL IMPL
+struct Ui {
+    camera: Camera,
+    lclick_state: Option<LclickState>,
+    rclick_state: Option<RclickState>,
+    pressing: Pressing,
+    aim_assist: u8,
+    last_mouse_at: Pt2,
+    controlling: usize,
+    config: UiConfig,
+    current_fullscreen: FullscreenType,
+}
+// user-facing Ui type: (1) fields are strings to be human-readable, and (2) serializable
+#[derive(Debug, Deserialize)]
+struct UiConfigSerde {
+    up: String,
+    down: String,
+    left: String,
+    right: String,
+    clockwise: String,
+    anticlockwise: String,
+    aim_assist: String,
+    quit: String,
+    cycle_fullscreen: String,
+    net_mode: String,
+    addr: String,
+    grab_cursor: bool,
+}
+// game-facing Ui type
+struct UiConfig {
+    up: KeyCode,
+    down: KeyCode,
+    left: KeyCode,
+    right: KeyCode,
+    clockwise: KeyCode,
+    anticlockwise: KeyCode,
+    aim_assist: KeyCode,
+    quit: KeyCode,
+    cycle_fullscreen: KeyCode,
+    net_mode: NetMode,
+    addr: SocketAddr,
+    grab_cursor: bool,
+}
 
+////////////////////////////////////////////////////
+fn main() {
+    let config: UiConfig = {
+        // create a handle to config file
+        let s = std::fs::read_to_string("game_config.toml").unwrap_or_else(|_| {
+            panic!(
+                "Couldn't find `config.toml` at current directory: {:?}",
+                std::env::current_dir().ok()
+            )
+        });
+        // parse config file
+        let mut x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
+        println!("{:?}", &x);
+        // use command line args 1 and 2 to overwrite `addr` and `net_mode` config fields if they are provided
+        let mut args = std::env::args();
+        args.next(); // skip 0th arg (path)
+        if let Some(s) = args.next() {
+            x.addr = s;
+            if let Some(s) = args.next() {
+                x.net_mode = s;
+            }
+        }
+        x.try_into().expect("Failed to parse config toml!")
+    };
+    println!("addr: {:?} net_mode {:?}", &config.addr, &config.net_mode);
+    // build the GGEZ context object. manages the windows, event loop, etc.
+    let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
+        .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
+        .build()
+        .unwrap();
+    // grab the cursor if config says to do so
+    ggez::input::mouse::set_cursor_grabbed(&mut ctx, config.grab_cursor).unwrap();
+    // create master game state object
+    let mut my_game = MyGame::new(&mut ctx, config);
+    // invoke GGEZ game loop. the magic happens at `impl EventHandler for MyGame`
+    event::run(&mut ctx, &mut event_loop, &mut my_game).expect("Game Err");
+}
+////////////////////////////////////////////////////
 impl FromStr for NetMode {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -367,33 +364,35 @@ impl PullLevel {
 impl MyGame {
     fn new(ctx: &mut Context, config: UiConfig) -> Self {
         let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
-
-        match config.net_mode {
+        let ui = Ui {
+            current_fullscreen: FullscreenType::Windowed,
+            controlling: 0,
+            config,
+            camera: Camera::default(),
+            last_mouse_at: [0.; 2].into(),
+            rclick_state: None,
+            lclick_state: None,
+            pressing: Default::default(),
+            aim_assist: 0,
+        };
+        match ui.config.net_mode {
             NetMode::Client => {
+                // My gamestate comes from a server!
+                // connect to server
                 let mut e = {
-                    let x = TcpStream::connect(config.addr).unwrap();
+                    let x = TcpStream::connect(ui.config.addr).unwrap();
                     Endpoint::new(x)
                 };
+                // receive essential world data from server
                 let (archers, baddies, arrows) = match e.recv::<Clientward>().unwrap().unwrap() {
                     Clientward::Welcome { archers, baddies, arrows } => {
                         (archers.into_owned(), baddies.into_owned(), arrows.into_owned())
                     }
                     _ => unreachable!("Always get a WELCOME first"),
                 };
+                // ... and generate the remaining known info
                 e.stream.set_nonblocking(true).unwrap();
                 let net_core = NetCore::Client(e);
-
-                let ui = Ui {
-                    current_fullscreen: FullscreenType::Windowed,
-                    controlling: archers.len() - 1,
-                    config,
-                    camera: Camera::default(),
-                    last_mouse_at: [0.; 2].into(),
-                    rclick_state: None,
-                    lclick_state: None,
-                    pressing: Default::default(),
-                    aim_assist: 0,
-                };
                 MyGame {
                     net_core,
                     baddies,
@@ -408,16 +407,18 @@ impl MyGame {
                 }
             }
             NetMode::Server | NetMode::Solo => {
-                let net_core = match config.net_mode {
+                // I create the gamestate myself!
+                let net_core = match ui.config.net_mode {
+                    NetMode::Client => unreachable!(),
+                    NetMode::Solo => NetCore::Solo,
                     NetMode::Server => NetCore::Server {
                         listener: {
-                            let x = TcpListener::bind(config.addr).unwrap();
+                            let x = TcpListener::bind(ui.config.addr).unwrap();
                             x.set_nonblocking(true).unwrap();
                             x
                         },
                         clients: Clients { endpoints: vec![] },
                     },
-                    _ => NetCore::Solo,
                 };
                 let archers = vec![Archer {
                     shot_vel: None,
@@ -435,18 +436,6 @@ impl MyGame {
                         b
                     })
                     .collect();
-
-                let ui = Ui {
-                    current_fullscreen: FullscreenType::Windowed,
-                    controlling: 0,
-                    config,
-                    camera: Camera::default(),
-                    last_mouse_at: [0.; 2].into(),
-                    rclick_state: None,
-                    lclick_state: None,
-                    pressing: Default::default(),
-                    aim_assist: 0,
-                };
                 MyGame {
                     net_core,
                     baddies,
@@ -534,11 +523,13 @@ impl MyGame {
         match &mut self.net_core {
             NetCore::Solo => (),
             NetCore::Server { clients, .. } => {
+                // inform clients of update
                 let c =
                     Clientward::ArcherEntityResync { index, entity: Cow::Borrowed(&archer.entity) };
                 clients.broadcast(&c).unwrap();
             }
             NetCore::Client(endpoint) => {
+                // inform server of update
                 endpoint
                     .send(&Serverward::ArcherEntityResync(Cow::Borrowed(&archer.entity)))
                     .unwrap();
@@ -753,14 +744,14 @@ impl EventHandler for MyGame {
                     // arrow hit the ground!
                     self.assets.audio.twang[self.ticks % 3].play().unwrap();
                     arrow.pos[2] = arrow.pos[2].min(0.);
-                    let (index, arrow) = entry.take();
+                    let (index, arrow) = entry.take(); // discard arrow with index `index`
                     if let Some(clients) = self.net_core.get_clients() {
                         // {Server} not {Solo, Client}
+                        // have all clients also discard arrow with index `index`
                         let c = Clientward::ArrowHitGround { index, arrow: Cow::Borrowed(&arrow) };
                         clients.broadcast(&c).unwrap();
                     }
                     self.stuck_arrows.push(arrow);
-                    // stuck in the ground
                     continue 'entry_loop;
                 }
                 for (baddie_index, baddie) in self.baddies.iter_mut().enumerate() {
@@ -961,264 +952,7 @@ impl EventHandler for MyGame {
         }
     }
 
-    ///////////////////////////////////////////////DRAW DRAW DRAW DRAW DRAW DRAW
-
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        const DUDE_SCALE: [f32; 2] = [2.; 2];
-        const ARROW_SCALE: f32 = 1.7;
-        const PULL_LIMP_ANGLE: f32 = -0.4;
-        const FRAME_TICKS: usize = 6;
-
-        // reset the screen's pixels to green
-        graphics::clear(ctx, GREEN);
-        // compute 'x' field of texture rectangle for archers.
-        // as a function of "time" (self.ticks) this results in a looping animation.
-        let archer_walk_x = match self.ticks % (FRAME_TICKS * 6) {
-            x if x < FRAME_TICKS * 1 => 0.0,
-            x if x < FRAME_TICKS * 2 => 0.2,
-            x if x < FRAME_TICKS * 3 => 0.4,
-            x if x < FRAME_TICKS * 4 => 0.6,
-            x if x < FRAME_TICKS * 5 => 0.4,
-            ________________________ => 0.2,
-        };
-        for (archer_index, a) in self.archers.iter().enumerate() {
-            let right_facing = self.ui.camera.archer_facing_right(a);
-            // incremetally compute the DrawParam for drawing this archer's texture.
-            let facing_dude_scale = [
-                //
-                DUDE_SCALE[0] * if right_facing { 1. } else { -1. },
-                DUDE_SCALE[1],
-            ];
-            let dude_arm_pos = self.ui.camera.pt_3_to_2(a.entity.pos + Vec3::from(TO_ARMS));
-            let dude_param = DrawParam {
-                src: Rect { x: 0., y: 0., h: 0.2, w: 0.2 },
-                dest: dude_arm_pos.into(),
-                color: WHITE,
-                scale: facing_dude_scale.into(),
-                offset: [0.5, 0.5].into(),
-                ..Default::default()
-            };
-            let main_src = {
-                let x = if a.entity.vel != Vec3::new(0., 0., 0.) { archer_walk_x } else { 0.4 };
-                Rect { x, y: 0., h: 0.2, w: 0.2 }
-            };
-            let (arm_src, arm_angle, arrow_angle) = if let Some(shot_vel) = a.shot_vel {
-                // this archer is drawing their bow
-                let pull_level = PullLevel::from_shot_vel(shot_vel);
-                // compute texture rectangle (i.e. which sprite in the sheet)
-                // ALL archers' arms are drawn in according to the angle they are aiming
-                let arm_src = {
-                    use PullLevel::*;
-                    let x = match pull_level {
-                        TooLittle | TooMuch => 0.,
-                        Low => 0.2,
-                        Med => 0.4,
-                        High => 0.6,
-                        Max => 0.8,
-                    };
-                    Rect { x, y: 0., h: 0.2, w: 0.2 }
-                };
-                let (arm_angle, arrow_angle) = if pull_level.can_shoot() {
-                    let x = Camera::rot_of_xy(self.ui.camera.vec_3_to_2(shot_vel));
-                    (if right_facing { x } else { x + PI }, Some(x))
-                } else if right_facing {
-                    // "PULL_LIMP_ANGLE" is the angle you hold your bow limply (not aiming)
-                    // used when player has a BAD pull (too little or too much)
-                    (PULL_LIMP_ANGLE, Some(-PULL_LIMP_ANGLE))
-                } else {
-                    (-PULL_LIMP_ANGLE, Some(PULL_LIMP_ANGLE + PI))
-                };
-
-                if archer_index == self.ui.controlling {
-                    // the player controls this archer! draw extra UI stuff
-                    let lclick_state = self.ui.lclick_state.as_ref().unwrap();
-                    let end: Pt2 = ggez::input::mouse::position(ctx).into();
-                    let diff = end - lclick_state.start;
-                    let difflen = diff.norm();
-                    let diffang = Camera::rot_of_xy(diff);
-                    let color = if lclick_state.last_pull_level.can_shoot() { WHITE } else { RED };
-                    // draw line that player uses to "pull" the bow. White if they COULD loose an arrow
-                    graphics::draw(
-                        ctx,
-                        &self.assets.tex.unit_line,
-                        DrawParam {
-                            color,
-                            dest: lclick_state.start.into(),
-                            rotation: diffang,
-                            scale: [difflen, 1.].into(),
-                            ..Default::default()
-                        },
-                    )?;
-                    if self.ui.aim_assist >= 1 {
-                        // minimal aim assist is toggled.
-                        // draw the little angle and pitch line overlay
-                        let aim_e_v3 = a.entity.pos + shot_vel * 7.;
-                        let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
-                        let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
-                        graphics::draw(
-                            ctx,
-                            &self.assets.tex.unit_line,
-                            DrawParam {
-                                scale: [rel_v2.coords.norm(), 1.].into(),
-                                rotation: Camera::rot_of_xy(rel_v2.coords),
-                                offset: [0., 0.5].into(),
-                                color: BLUE,
-                                ..dude_param
-                            },
-                        )?;
-                        let aim_e_v3 = a.entity.pos + Vec3::new(shot_vel[0], shot_vel[1], 0.) * 7.;
-                        let aim_e_v2 = self.ui.camera.pt_3_to_2(aim_e_v3);
-                        let rel_v2 = aim_e_v2 - Vec2::from(SCREEN_TRANS_V2);
-                        let dude_feet_pos = self.ui.camera.pt_3_to_2(a.entity.pos);
-                        graphics::draw(
-                            ctx,
-                            &self.assets.tex.unit_line,
-                            DrawParam {
-                                dest: dude_feet_pos.into(),
-                                scale: [rel_v2.coords.norm(), 1.].into(),
-                                rotation: Camera::rot_of_xy(rel_v2.coords),
-                                offset: [0., 0.5].into(),
-                                color: BLACK,
-                                ..dude_param
-                            },
-                        )?;
-                        if self.ui.aim_assist >= 2 {
-                            // aim assist is set to max. predict the arrow's impact location.
-                            // simple solution: create an arrow entity and simulate its flight WHILE its not hit the ground.
-                            let mut arrow = Entity {
-                                vel: shot_vel,
-                                pos: a.entity.pos - Vec3::new(0., 0., 32.),
-                            };
-                            while arrow.pos[2] < 0. {
-                                arrow.vel = Entity::grav_and_air_resist(arrow.vel);
-                                arrow.pos += arrow.vel;
-                            }
-                            arrow.pos[2] = 0.;
-                            // ... and draw a cross on the floor where it impacted
-                            graphics::draw(
-                                ctx,
-                                &self.assets.tex.cross,
-                                DrawParam {
-                                    dest: self.ui.camera.pt_3_to_2(arrow.pos).into(),
-                                    scale: [8., 8. / ROOT_OF_2].into(),
-                                    ..Default::default()
-                                },
-                            )?;
-                        }
-                    }
-                }
-                (arm_src, arm_angle, arrow_angle)
-            } else {
-                let arm_src = Rect { x: 0., y: 0., h: 0.2, w: 0.2 };
-                let arm_angle = if right_facing { PULL_LIMP_ANGLE } else { -PULL_LIMP_ANGLE };
-                (arm_src, arm_angle, None)
-            };
-            // draw archer layer 1/4 (back arm)
-            graphics::draw(
-                ctx,
-                &self.assets.tex.archer_back,
-                DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
-            )?;
-            // draw archer layer 2/4 (body)
-            graphics::draw(
-                ctx,
-                &self.assets.tex.archer,
-                DrawParam { src: main_src, ..dude_param },
-            )?;
-            // draw archer layer 3/4 (front arm + bow)
-            graphics::draw(
-                ctx,
-                &self.assets.tex.archer_front,
-                DrawParam { src: arm_src, rotation: arm_angle, ..dude_param },
-            )?;
-            if let Some(arrow_angle) = arrow_angle {
-                // draw archer layer 4/4 (nocked arrow)
-                let p = DrawParam {
-                    dest: (dude_arm_pos + Vec2::new(0., -5.0)).into(),
-                    src: Rect { x: 0., y: 0., w: 1., h: 0.25 },
-                    scale: [ARROW_SCALE, ARROW_SCALE].into(),
-                    rotation: arrow_angle,
-                    offset: [0., 0.5].into(),
-                    ..dude_param
-                };
-                self.assets.tex.arrow_batch.add(p);
-            }
-        }
-        fn flatten(p: Pt3) -> Pt3 {
-            [p[0], p[1], 0.].into()
-        }
-        // draw grasses rocks etc. using INSTANCED RENDERING
-        for doodad in self.doodads.iter() {
-            self.assets.tex.doodads.add(DrawParam {
-                src: doodad.kind.rect(),
-                dest: self.ui.camera.pt_3_to_2(doodad.pos).into(),
-                offset: [0.5, 0.5].into(),
-                ..Default::default()
-            });
-        }
-        // define a closure for adding an arrow instance
-        // to the arrow batch (for instanced rendering on GPU)
-        let arrow_draw =
-            |y: f32, arrow: &Entity, arrow_batch: &mut SpriteBatch, camera: &Camera| {
-                // arrow's shadow on the ground
-                let src = Rect { x: 0., y, w: 1., h: 0.25 };
-                let dest = camera.pt_3_to_2(flatten(arrow.pos));
-                let [rotation, len] = camera.vel_to_rot_len_shadow(arrow.vel);
-                let p = DrawParam {
-                    src,
-                    dest: dest.into(),
-                    scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
-                    rotation,
-                    color: BLACK,
-                    offset: [0.95, 0.5].into(),
-                    ..Default::default()
-                };
-                // arrow in the air
-                arrow_batch.add(p);
-                let dest = camera.pt_3_to_2(arrow.pos);
-                let [rotation, len] = camera.vel_to_rot_len(arrow.vel);
-                let p = DrawParam {
-                    src,
-                    dest: dest.into(),
-                    scale: [len * ARROW_SCALE, ARROW_SCALE].into(),
-                    rotation,
-                    offset: [0.95, 0.5].into(),
-                    ..Default::default()
-                };
-                arrow_batch.add(p);
-            };
-        // draw baddies in the world
-        for b in &self.baddies {
-            self.assets.tex.doodads.add(DrawParam {
-                src: DoodadKind::Rock.rect(),
-                dest: self.ui.camera.pt_3_to_2(b.entity.pos).into(),
-                color: Color { r: 1.0, g: b.health, b: b.health, a: 1. },
-                scale: [3.1, 5.0].into(),
-                offset: [0.5, 0.75].into(),
-                ..Default::default()
-            });
-            for arrow in &b.stuck_arrows {
-                let mut a: Entity = Entity::clone(arrow);
-                a.pos += b.entity.pos.coords;
-                arrow_draw(0.25, &a, &mut self.assets.tex.arrow_batch, &self.ui.camera);
-            }
-        }
-        // invoke the `arrow_draw` closure for all arrows in flight
-        for arrow in self.arrows.iter() {
-            arrow_draw(0.00, arrow, &mut self.assets.tex.arrow_batch, &self.ui.camera);
-        }
-        // invoke the `arrow_draw` closure for all arrows on thr ground
-        // use a different texture rectangle (headless arrows because stuck in the target)
-        for arrow in self.stuck_arrows.iter() {
-            arrow_draw(0.25, arrow, &mut self.assets.tex.arrow_batch, &self.ui.camera);
-        }
-        // fire off instanced rendering on GPU (synchronous)
-        graphics::draw(ctx, &self.assets.tex.arrow_batch, DrawParam::default())?;
-        graphics::draw(ctx, &self.assets.tex.doodads, DrawParam::default())?;
-        // ... and clear the batch again for use in the next frame
-        self.assets.tex.arrow_batch.clear();
-        self.assets.tex.doodads.clear();
-        // finalize.
-        graphics::present(ctx)
+        self.my_draw(ctx)
     }
 }
