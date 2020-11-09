@@ -14,3 +14,4 @@ toml = "0.5"
 rand = { version = "0.7.3", features = ["small_rng"] }
 bincode = "1.2.1"
 nalgebra = { version = "0.18.0", features = ["serde-serialize"] }
+more-asserts = "0.2.1"
