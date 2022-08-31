@@ -854,7 +854,13 @@ impl EventHandler for MyGame {
                         NetCore::Client(endpoint) => endpoint
                             .send(&Serverward::ArcherShootArrow(Cow::Borrowed(&arrow)))
                             .unwrap(),
-                        NetCore::Solo => self.arrows.push(arrow),
+                        NetCore::Solo => {
+                            self.assets.audio.loose[0].play().unwrap();
+                            for t in &mut self.assets.audio.taut {
+                                t.stop();
+                            }
+                            self.arrows.push(arrow)
+                        }
                         NetCore::Server { clients, .. } => {
                             let c = Clientward::ArcherShootArrow {
                                 index: self.ui.controlling,
