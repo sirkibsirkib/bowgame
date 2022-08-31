@@ -11,4 +11,4 @@ cycle_fullscreen = "F"
 quit = "Escape"
 net_mode = "Solo"
 addr = "127.0.0.1:8888"
-grab_cursor = true
+grab_cursor = false

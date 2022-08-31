@@ -1039,56 +1039,56 @@ impl EventHandler for MyGame {
     }
 
     fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, _x: f32, _y: f32) {
-<<<<<<< HEAD
-        match button {
-            MouseButton::Left => {
-                if let Some(arrow) =
-                    self.archers[self.ui.controlling].shot_vel.take().and_then(|shot_vel| {
-                        // compute the velocity vector of the arrow shot in current state
-                        self.ui.lclick_state = None;
-                        match shot_vel.norm_squared() {
-                            x if x < MIN_VEL.sqr() => None,
-                            x if x > MAX_VEL.sqr() => None,
-                            _ => Some(Entity {
-                                pos: self.archers[self.ui.controlling].entity.pos
-                                    + Vec3::from(TO_ARMS),
-                                vel: shot_vel,
-                            }),
-                        }
-                    })
-                {
-                    // yes! we shoot an arrow with entity data `arrow`
-                    match &mut self.net_core {
-                        NetCore::Client(endpoint) => endpoint
-                            .send(&Serverward::ArcherShootArrow(Cow::Borrowed(&arrow)))
-                            .unwrap(),
-                        NetCore::Solo => {
-                            self.assets.audio.loose[0].play().unwrap();
-                            for t in &mut self.assets.audio.taut {
-                                t.stop();
-                            }
-                            self.arrows.push(arrow)
-                        }
-                        NetCore::Server { clients, .. } => {
-                            let c = Clientward::ArcherShootArrow {
-                                index: self.ui.controlling,
-                                entity: Cow::Borrowed(&arrow),
-                            };
-                            self.assets.audio.loose[0].play().unwrap();
-                            for t in &mut self.assets.audio.taut {
-                                t.stop();
-                            }
-                            clients.broadcast(&c).unwrap();
-                            self.arrows.push(arrow);
-                        }
-                    }
-=======
+        // <<<<<<< HEAD
+        //         match button {
+        //             MouseButton::Left => {
+        //                 if let Some(arrow) =
+        //                     self.archers[self.ui.controlling].shot_vel.take().and_then(|shot_vel| {
+        //                         // compute the velocity vector of the arrow shot in current state
+        //                         self.ui.lclick_state = None;
+        //                         match shot_vel.norm_squared() {
+        //                             x if x < MIN_VEL.sqr() => None,
+        //                             x if x > MAX_VEL.sqr() => None,
+        //                             _ => Some(Entity {
+        //                                 pos: self.archers[self.ui.controlling].entity.pos
+        //                                     + Vec3::from(TO_ARMS),
+        //                                 vel: shot_vel,
+        //                             }),
+        //                         }
+        //                     })
+        //                 {
+        //                     // yes! we shoot an arrow with entity data `arrow`
+        //                     match &mut self.net_core {
+        //                         NetCore::Client(endpoint) => endpoint
+        //                             .send(&Serverward::ArcherShootArrow(Cow::Borrowed(&arrow)))
+        //                             .unwrap(),
+        //                         NetCore::Solo => {
+        //                             self.assets.audio.loose[0].play().unwrap();
+        //                             for t in &mut self.assets.audio.taut {
+        //                                 t.stop();
+        //                             }
+        //                             self.arrows.push(arrow)
+        //                         }
+        //                         NetCore::Server { clients, .. } => {
+        //                             let c = Clientward::ArcherShootArrow {
+        //                                 index: self.ui.controlling,
+        //                                 entity: Cow::Borrowed(&arrow),
+        //                             };
+        //                             self.assets.audio.loose[0].play().unwrap();
+        //                             for t in &mut self.assets.audio.taut {
+        //                                 t.stop();
+        //                             }
+        //                             clients.broadcast(&c).unwrap();
+        //                             self.arrows.push(arrow);
+        //                         }
+        //                     }
+        // =======
         if let ControlState::MouseAndKeyboard(maks) = &mut self.ui.control_state {
             match button {
                 MouseButton::Left => {
                     maks.lclick_state = None;
                     self.loose_arrow();
->>>>>>> b4d69710c9ebb5091bf9439240823a09ce4fb678
+                    // >>>>>>> b4d69710c9ebb5091bf9439240823a09ce4fb678
                 }
                 MouseButton::Right => maks.rclick_state = None,
                 _ => {}
