@@ -11,6 +11,7 @@ use ggez::{
     },
     *,
 };
+use more_asserts::*;
 use nalgebra::{Rotation2, Rotation3, Transform3, Translation3};
 use rand::{
     distributions::{Distribution, Standard},
@@ -32,10 +33,12 @@ struct Pressing {
     clockwise: Option<bool>,
 }
 
+const INITIAL_FULLSCREEN: FullscreenType = FullscreenType::True;
+
 const MIN_VEL: f32 = 9.;
 const MAX_VEL: f32 = 35.;
 const ROOT_OF_2: f32 = 1.41421356;
-const WIN_DIMS: [f32; 2] = [800., 600.];
+const WIN_DIMS: [f32; 2] = [960., 540.];
 const BADDIE_SPEED: f32 = 0.5;
 const NUM_BADDIES: usize = 4;
 
@@ -84,6 +87,7 @@ struct AudioAssets {
     loose: [Source; 1],
     twang: [Source; 3],
     thud: [Source; 1],
+    click: [Source; 1],
 }
 enum DoodadKind {
     Bush,
@@ -151,13 +155,27 @@ enum PullLevel {
     Max,
     TooMuch,
 }
-struct Ui {
-    camera: Camera,
+struct MouseAndKeyboardState {
+    last_mouse_at: Pt2,
+    pressing: Pressing,
     lclick_state: Option<LclickState>,
     rclick_state: Option<RclickState>,
-    pressing: Pressing,
+}
+struct ControllerState {
+    // invariant: corrected s.t. not a vector with norm > 1.
+    left_stick: Vec2,
+    right_stick: Vec2,
+    trigger_held: bool,
+    last_pull_level: PullLevel,
+}
+enum ControlState {
+    MouseAndKeyboard(MouseAndKeyboardState),
+    Controller(ControllerState),
+}
+struct Ui {
+    control_state: ControlState,
+    camera: Camera,
     aim_assist: u8,
-    last_mouse_at: Pt2,
     controlling: usize,
     config: UiConfig,
     current_fullscreen: FullscreenType,
@@ -165,6 +183,7 @@ struct Ui {
 // user-facing Ui type: (1) fields are strings to be human-readable, and (2) serializable
 #[derive(Debug, Deserialize)]
 struct UiConfigSerde {
+    use_controller: bool,
     up: String,
     down: String,
     left: String,
@@ -180,6 +199,7 @@ struct UiConfigSerde {
 }
 // game-facing Ui type
 struct UiConfig {
+    use_controller: bool,
     up: KeyCode,
     down: KeyCode,
     left: KeyCode,
@@ -221,7 +241,12 @@ fn main() {
     println!("addr: {:?} net_mode {:?}", &config.addr, &config.net_mode);
     // build the GGEZ context object. manages the windows, event loop, etc.
     let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
-        .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
+        .window_mode(WindowMode {
+            width: WIN_DIMS[0],
+            height: WIN_DIMS[1],
+            fullscreen_type: INITIAL_FULLSCREEN,
+            ..Default::default()
+        })
         .build()
         .unwrap();
     // grab the cursor if config says to do so
@@ -338,6 +363,28 @@ impl Camera {
 }
 
 impl PullLevel {
+    fn update(&mut self, shot_vel: Vec3, assets: &mut Assets) {
+        let new_pull_level = PullLevel::from_shot_vel(shot_vel);
+        if new_pull_level != *self {
+            fn pl_to_audio_index(pl: PullLevel) -> Option<usize> {
+                Some(match pl {
+                    PullLevel::TooMuch | PullLevel::TooLittle => return None,
+                    PullLevel::Low => 0,
+                    PullLevel::Med => 1,
+                    PullLevel::High => 2,
+                    PullLevel::Max => 3,
+                })
+            }
+            // stop previous taut noise, play the new one
+            if let Some(index) = pl_to_audio_index(*self) {
+                assets.audio.taut[index].stop();
+            }
+            if let Some(index) = pl_to_audio_index(new_pull_level) {
+                assets.audio.taut[index].play().unwrap();
+            }
+            *self = new_pull_level;
+        }
+    }
     fn can_shoot(self) -> bool {
         match self {
             Self::TooLittle | Self::TooMuch => false,
@@ -363,18 +410,30 @@ impl PullLevel {
 
 impl MyGame {
     fn new(ctx: &mut Context, config: UiConfig) -> Self {
-        let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
+        let control_state = if config.use_controller {
+            ControlState::Controller(ControllerState {
+                left_stick: [0.; 2].into(),
+                right_stick: [0.; 2].into(),
+                trigger_held: false,
+                last_pull_level: PullLevel::TooLittle,
+            })
+        } else {
+            ControlState::MouseAndKeyboard(MouseAndKeyboardState {
+                last_mouse_at: [0.; 2].into(),
+                rclick_state: None,
+                lclick_state: None,
+                pressing: Default::default(),
+            })
+        };
         let ui = Ui {
-            current_fullscreen: FullscreenType::Windowed,
+            control_state,
+            current_fullscreen: INITIAL_FULLSCREEN,
             controlling: 0,
             config,
             camera: Camera::default(),
-            last_mouse_at: [0.; 2].into(),
-            rclick_state: None,
-            lclick_state: None,
-            pressing: Default::default(),
-            aim_assist: 0,
+            aim_assist: 2,
         };
+        let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
         match ui.config.net_mode {
             NetMode::Client => {
                 // My gamestate comes from a server!
@@ -487,39 +546,48 @@ impl MyGame {
     fn recalculate_controlled_vel(&mut self) {
         let index = self.ui.controlling;
         let archer = &mut self.archers[index];
-        // compute velocity in SCREEN SPACE
-        let vel2 = Vec2::new(
-            match self.ui.pressing.right {
-                Some(true) => 1.,
-                Some(false) => -1.,
-                _ => 0.,
-            },
-            match self.ui.pressing.down {
-                Some(true) => 1. / ROOT_OF_2,
-                Some(false) => -1. / ROOT_OF_2,
-                _ => 0.,
-            },
-        );
-        // "unit speed" before being scaled
-        let vel3 = self.ui.camera.vec_2_to_3(vel2);
-
-        // slow x,y walk speeds if BOTH x,y are nonzero (walking diagonally)
-        let mut speed = if self.ui.pressing.down.is_some() && self.ui.pressing.right.is_some() {
-            WALK_SPEED / ROOT_OF_2
-        } else {
-            WALK_SPEED
-        };
-        if let Some(shot_vel) = archer.shot_vel {
-            // slow speed further if aiming an arrow
-            speed *= 0.6;
-            let backpedaling = shot_vel.dot(&vel3) < 0.;
-            if backpedaling {
-                // slow speed further if walking backwards while aiming forwards
-                speed *= 0.4;
+        archer.entity.vel = match &mut self.ui.control_state {
+            ControlState::Controller(cs) => {
+                if cs.trigger_held {
+                    [0.; 3].into()
+                } else {
+                    self.ui.camera.vec_2_to_3(cs.left_stick) * WALK_SPEED
+                }
             }
-        }
-        // overwrite controlled archer's speed with scaled "unit speed".
-        archer.entity.vel = vel3 * speed;
+            ControlState::MouseAndKeyboard(maks) => {
+                // compute velocity in SCREEN SPACE
+                let vel2 = Vec2::new(
+                    match maks.pressing.right {
+                        Some(true) => 1.,
+                        Some(false) => -1.,
+                        _ => 0.,
+                    },
+                    match maks.pressing.down {
+                        Some(true) => 1. / ROOT_OF_2,
+                        Some(false) => -1. / ROOT_OF_2,
+                        _ => 0.,
+                    },
+                );
+                // slow x,y walk speeds if BOTH x,y are nonzero (walking diagonally)
+                let mut speed = if maks.pressing.down.is_some() && maks.pressing.right.is_some() {
+                    WALK_SPEED / ROOT_OF_2
+                } else {
+                    WALK_SPEED
+                };
+                // "unit speed" before being scaled
+                let vel3 = self.ui.camera.vec_2_to_3(vel2);
+                if let Some(shot_vel) = archer.shot_vel {
+                    // slow speed further if aiming an arrow
+                    speed *= 0.6;
+                    let backpedaling = shot_vel.dot(&vel3) < 0.;
+                    if backpedaling {
+                        // slow speed further if walking backwards while aiming forwards
+                        speed *= 0.4;
+                    }
+                }
+                vel3 * speed
+            }
+        };
         match &mut self.net_core {
             NetCore::Solo => (),
             NetCore::Server { clients, .. } => {
@@ -536,24 +604,145 @@ impl MyGame {
             }
         }
     }
+    fn loose_arrow(&mut self) -> bool {
+        let arrow: Entity = {
+            let archer = &mut self.archers[self.ui.controlling];
+            if let Some(arrow) = archer.shot_vel.take().and_then(|shot_vel| {
+                // compute the velocity vector of the arrow shot in current state
+                match shot_vel.norm_squared() {
+                    x if x < MIN_VEL.sqr() => None,
+                    x if x > MAX_VEL.sqr() => None,
+                    _ => {
+                        Some(Entity { pos: archer.entity.pos + Vec3::from(TO_ARMS), vel: shot_vel })
+                    }
+                }
+            }) {
+                arrow
+            } else {
+                return false;
+            }
+        };
+        match &mut self.net_core {
+            NetCore::Client(endpoint) => {
+                endpoint.send(&Serverward::ArcherShootArrow(Cow::Borrowed(&arrow))).unwrap()
+            }
+            NetCore::Solo => {
+                self.arrows.push(arrow);
+
+                self.assets.audio.loose[0].play().unwrap();
+                for t in &mut self.assets.audio.taut {
+                    t.stop();
+                }
+            }
+            NetCore::Server { clients, .. } => {
+                let c = Clientward::ArcherShootArrow {
+                    index: self.ui.controlling,
+                    entity: Cow::Borrowed(&arrow),
+                };
+                self.assets.audio.loose[0].play().unwrap();
+                for t in &mut self.assets.audio.taut {
+                    t.stop();
+                }
+                clients.broadcast(&c).unwrap();
+                self.arrows.push(arrow);
+            }
+        }
+        true
+    }
 }
 impl EventHandler for MyGame {
     fn gamepad_button_down_event(
         &mut self,
         _ctx: &mut Context,
         btn: ggez::event::Button,
-        id: ggez::event::GamepadId,
+        _id: ggez::event::GamepadId,
     ) {
-        dbg!(btn, id);
+        if let ControlState::Controller(cs) = &mut self.ui.control_state {
+            if btn == event::Button::RightTrigger2 && cs.right_stick.norm_squared() < 0.01 {
+                self.assets.audio.click[0].play().unwrap();
+                cs.trigger_held = true;
+                self.recalculate_controlled_vel();
+            }
+        }
+    }
+    fn gamepad_button_up_event(
+        &mut self,
+        _ctx: &mut Context,
+        btn: ggez::event::Button,
+        _id: ggez::event::GamepadId,
+    ) {
+        if let ControlState::Controller(cs) = &mut self.ui.control_state {
+            if btn == event::Button::RightTrigger2 {
+                cs.trigger_held = false;
+                self.loose_arrow();
+            }
+        }
     }
     fn gamepad_axis_event(
         &mut self,
         _ctx: &mut Context,
         axis: ggez::event::Axis,
         value: f32,
-        id: ggez::event::GamepadId,
+        _id: ggez::event::GamepadId,
     ) {
-        dbg!(axis, value, id);
+        if let ControlState::Controller(cs) = &mut self.ui.control_state {
+            use ggez::event::Axis::*;
+            fn limit_vec2(vec2: &mut Vec2) {
+                *vec2 /= vec2.norm().max(1.) * 1.001;
+                // assert_le!(vec2.norm(), 1.);
+            }
+            let recompute_velocity = match axis {
+                LeftStickX => {
+                    cs.left_stick[0] = value;
+                    limit_vec2(&mut cs.left_stick);
+                    !cs.trigger_held
+                }
+                LeftStickY => {
+                    cs.left_stick[1] = -value;
+                    limit_vec2(&mut cs.left_stick);
+                    !cs.trigger_held
+                }
+                RightStickX => {
+                    cs.right_stick[0] = value;
+                    limit_vec2(&mut cs.right_stick);
+                    false
+                }
+                RightStickY => {
+                    cs.right_stick[1] = -value;
+                    limit_vec2(&mut cs.right_stick);
+                    false
+                }
+                _ => return,
+            };
+            if cs.trigger_held {
+                let archer = &mut self.archers[self.ui.controlling];
+                let r_norm = cs.right_stick.norm(); // force of the shot is RSTICK's length
+                archer.shot_vel = if r_norm * MAX_VEL < MIN_VEL {
+                    None
+                } else {
+                    // assert_le!(cs.left_stick.norm(), 1.);
+                    let diff_vec2 = (0.9 * r_norm * cs.left_stick) - cs.right_stick;
+                    let diff_norm = diff_vec2.norm();
+                    // assert_le!(diff_norm, r_norm * 2.);
+                    // the shot
+                    // ...has length within 0..MAX_VEL
+                    // ...has xy angle the same as diff_vec
+                    // ...points closer to the horizon the longer diff_vec2 is
+                    let mut shot_vec3 = self.ui.camera.vec_2_to_3(diff_vec2) / diff_norm * r_norm;
+                    let pitch = (1. - diff_norm / r_norm) * 0.5 + 0.5;
+                    // assert_le!(pitch, 1.);
+                    shot_vec3[0] *= pitch.cos();
+                    shot_vec3[1] *= pitch.cos();
+                    shot_vec3[2] = -r_norm * pitch.sin();
+                    shot_vec3 = shot_vec3 * MAX_VEL * r_norm / shot_vec3.norm();
+                    cs.last_pull_level.update(shot_vec3, &mut self.assets);
+                    Some(shot_vec3)
+                }
+            }
+            if recompute_velocity {
+                self.recalculate_controlled_vel();
+            }
+        }
     }
     fn key_down_event(
         &mut self,
@@ -562,15 +751,8 @@ impl EventHandler for MyGame {
         _keymods: KeyMods,
         _repeat: bool,
     ) {
-        let Ui { pressing, config, aim_assist, current_fullscreen, .. } = &mut self.ui;
+        let Ui { control_state, config, aim_assist, current_fullscreen, .. } = &mut self.ui;
         match keycode {
-            x if x == config.up => pressing.down = Some(false),
-            x if x == config.left => pressing.right = Some(false),
-            x if x == config.anticlockwise => pressing.clockwise = Some(false),
-            //
-            x if x == config.down => pressing.down = Some(true),
-            x if x == config.right => pressing.right = Some(true),
-            x if x == config.clockwise => pressing.clockwise = Some(true),
             //
             x if x == config.quit => ggez::event::quit(ctx),
             x if x == config.aim_assist => *aim_assist = (*aim_assist + 1) % 3,
@@ -584,36 +766,74 @@ impl EventHandler for MyGame {
                 *current_fullscreen = n;
                 ggez::graphics::set_fullscreen(ctx, n).unwrap();
             }
-            _ => return,
+            _ => {}
         }
-        self.recalculate_controlled_vel();
+        if let ControlState::MouseAndKeyboard(maks) = control_state {
+            match keycode {
+                x if x == config.up => maks.pressing.down = Some(false),
+                x if x == config.left => maks.pressing.right = Some(false),
+                x if x == config.anticlockwise => maks.pressing.clockwise = Some(false),
+                //
+                x if x == config.down => maks.pressing.down = Some(true),
+                x if x == config.right => maks.pressing.right = Some(true),
+                x if x == config.clockwise => maks.pressing.clockwise = Some(true),
+                _ => return,
+            }
+            self.recalculate_controlled_vel();
+        }
     }
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
-        let Ui { pressing, config, .. } = &mut self.ui;
-        match keycode {
-            x if x == config.up && pressing.down == Some(false) => pressing.down = None,
-            x if x == config.left && pressing.right == Some(false) => pressing.right = None,
-            x if x == config.anticlockwise && pressing.clockwise == Some(false) => {
-                pressing.clockwise = None
+        let Ui { control_state, config, .. } = &mut self.ui;
+        if let ControlState::MouseAndKeyboard(maks) = control_state {
+            match keycode {
+                x if x == config.up && maks.pressing.down == Some(false) => {
+                    maks.pressing.down = None
+                }
+                x if x == config.left && maks.pressing.right == Some(false) => {
+                    maks.pressing.right = None
+                }
+                x if x == config.anticlockwise && maks.pressing.clockwise == Some(false) => {
+                    maks.pressing.clockwise = None
+                }
+                //
+                x if x == config.down && maks.pressing.down == Some(true) => {
+                    maks.pressing.down = None
+                }
+                x if x == config.right && maks.pressing.right == Some(true) => {
+                    maks.pressing.right = None
+                }
+                x if x == config.clockwise && maks.pressing.clockwise == Some(true) => {
+                    maks.pressing.clockwise = None
+                }
+                _ => return,
             }
-            //
-            x if x == config.down && pressing.down == Some(true) => pressing.down = None,
-            x if x == config.right && pressing.right == Some(true) => pressing.right = None,
-            x if x == config.clockwise && pressing.clockwise == Some(true) => {
-                pressing.clockwise = None
-            }
-            _ => return,
+            self.recalculate_controlled_vel();
         }
-        self.recalculate_controlled_vel();
     }
 
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
         // rotate camera
-        self.ui.camera.world_rot += match self.ui.pressing.clockwise {
-            None => 0.,
-            Some(true) => -0.05,
-            Some(false) => 0.05,
+        self.ui.camera.world_rot += match &self.ui.control_state {
+            ControlState::MouseAndKeyboard(maks) => match maks.pressing.clockwise {
+                None => 0.,
+                Some(true) => -0.05,
+                Some(false) => 0.05,
+            },
+            ControlState::Controller(cs) => {
+                if cs.trigger_held {
+                    0.
+                } else {
+                    cs.right_stick[0] * -0.04
+                }
+            }
         };
+        if let ControlState::MouseAndKeyboard(maks) = &self.ui.control_state {
+            self.ui.camera.world_rot += match maks.pressing.clockwise {
+                None => 0.,
+                Some(true) => -0.05,
+                Some(false) => 0.05,
+            };
+        }
         // gravity and air resistance on arrows
         for arrow in self.arrows.iter_mut() {
             arrow.vel = Entity::grav_and_air_resist(arrow.vel);
@@ -727,15 +947,6 @@ impl EventHandler for MyGame {
                     clients.endpoints.push(e);
                 }
             }
-            // // arrow-arrow collisions
-            // let mut i = IterPairs::new(&mut self.arrows);
-            // while let Some([a, b]) = i.next() {
-            //     if (a.pos - b.pos).norm() < 50. {
-            //         let v = (a.vel + b.vel) * 0.5;
-            //         a.vel = v;
-            //         b.vel = v;
-            //     }
-            // }
             // collision events
             let mut draining = Draining::new(&mut self.arrows);
             'entry_loop: while let Some(mut entry) = draining.next() {
@@ -796,16 +1007,6 @@ impl EventHandler for MyGame {
                             Clientward::BaddieResync { index, entity: Cow::Borrowed(&b.entity) };
                         clients.broadcast(&c).unwrap();
                     }
-                    // if n < 800. && self.rng.gen_bool(0.3) {
-                    //     // this baddie shoots an arrow
-                    //     let mut vel = archerward * 0.055;
-                    //     vel[2] = -n * 0.02;
-                    //     for i in 0..3 {
-                    //         vel[i] += self.rng.gen_range(0., 2.0);
-                    //     }
-                    //     self.arrows
-                    //         .push(Entity { pos: b.entity.pos + 4. * Vec3::from(TO_ARMS), vel });
-                    // }
                 }
             }
         }
@@ -813,25 +1014,32 @@ impl EventHandler for MyGame {
     }
 
     fn mouse_button_down_event(&mut self, _ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
-        match button {
-            MouseButton::Left => {
-                let start = [x, y].into();
-                self.ui.lclick_state =
-                    Some(LclickState { start, last_pull_level: PullLevel::TooLittle });
-                self.archers[self.ui.controlling].shot_vel = Some(Vec3::new(0., 0., 0.));
+        if let ControlState::MouseAndKeyboard(maks) = &mut self.ui.control_state {
+            match button {
+                MouseButton::Left => {
+                    let start = [x, y].into();
+                    maks.lclick_state =
+                        Some(LclickState { start, last_pull_level: PullLevel::TooLittle });
+                    self.archers[self.ui.controlling].shot_vel = Some(Vec3::new(0., 0., 0.));
+                }
+                MouseButton::Right => {
+                    let anchor_pt: Pt2 = [x, y].into();
+                    let anchor_diff: Pt2 = anchor_pt
+                        - self
+                            .ui
+                            .camera
+                            .pt_3_to_2(self.archers[self.ui.controlling].entity.pos)
+                            .coords;
+                    maks.rclick_state =
+                        Some(RclickState { anchor_angle: Camera::rot_of_xy(anchor_diff.coords) })
+                }
+                _ => {}
             }
-            MouseButton::Right => {
-                let anchor_pt: Pt2 = [x, y].into();
-                let anchor_diff: Pt2 = anchor_pt
-                    - self.ui.camera.pt_3_to_2(self.archers[self.ui.controlling].entity.pos).coords;
-                self.ui.rclick_state =
-                    Some(RclickState { anchor_angle: Camera::rot_of_xy(anchor_diff.coords) })
-            }
-            _ => {}
         }
     }
 
     fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, _x: f32, _y: f32) {
+<<<<<<< HEAD
         match button {
             MouseButton::Left => {
                 if let Some(arrow) =
@@ -874,87 +1082,77 @@ impl EventHandler for MyGame {
                             self.arrows.push(arrow);
                         }
                     }
+=======
+        if let ControlState::MouseAndKeyboard(maks) = &mut self.ui.control_state {
+            match button {
+                MouseButton::Left => {
+                    maks.lclick_state = None;
+                    self.loose_arrow();
+>>>>>>> b4d69710c9ebb5091bf9439240823a09ce4fb678
                 }
+                MouseButton::Right => maks.rclick_state = None,
+                _ => {}
             }
-            MouseButton::Right => self.ui.rclick_state = None,
-            _ => {}
         }
     }
 
     fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32, _dx: f32, _dy: f32) {
-        let mouse_at: Pt2 = [x, y].into();
-        if self.ui.last_mouse_at == mouse_at {
-            // optimization and avoid spamming bow taut noises
-            return;
-        }
-        self.ui.last_mouse_at = mouse_at;
-        let archer = &mut self.archers[self.ui.controlling];
-        if let (Some(LclickState { start, last_pull_level }), (entity, Some(shot_vel))) =
-            (&mut self.ui.lclick_state, {
-                let Archer { entity, shot_vel } = archer;
-                (entity as &Entity, shot_vel)
-            })
-        {
-            // destructured and matched:
-            // 1. some left-clicking state, and
-            // 2. the state of the controlled archer
-            let line_v = start.coords - mouse_at.coords;
-            let pull_v = line_v * 0.11;
-            let duderel = self.ui.camera.pt_3_to_2(entity.pos).coords - mouse_at.coords;
-            let proj_scalar = pull_v.dot(&duderel) / pull_v.dot(&pull_v);
-            let proj_v = pull_v * proj_scalar;
-            let perp_v = proj_v - duderel;
-            let z = perp_v.norm() * -0.07;
-            // update recomputed shot_vel: the velocity vector an arrow released in this state gets
-            // ... first in 2d space (along the floor)
-            *shot_vel = self.ui.camera.vec_2_to_3(pull_v);
-            // ... and then overwriting the vertical velocity
-            shot_vel[2] = z;
+        if let ControlState::MouseAndKeyboard(maks) = &mut self.ui.control_state {
+            let mouse_at: Pt2 = [x, y].into();
+            if maks.last_mouse_at == mouse_at {
+                // optimization and avoid spamming bow taut noises
+                return;
+            }
+            maks.last_mouse_at = mouse_at;
+            let archer = &mut self.archers[self.ui.controlling];
+            if let (Some(LclickState { start, last_pull_level }), (entity, Some(shot_vel))) =
+                (&mut maks.lclick_state, {
+                    let Archer { entity, shot_vel } = archer;
+                    (entity as &Entity, shot_vel)
+                })
+            {
+                // destructured and matched:
+                // 1. some left-clicking state, and
+                // 2. the state of the controlled archer
+                let line_v = start.coords - mouse_at.coords;
+                let pull_v = line_v * 0.11;
+                let duderel = self.ui.camera.pt_3_to_2(entity.pos).coords - mouse_at.coords;
+                let proj_scalar = pull_v.dot(&duderel) / pull_v.dot(&pull_v);
+                let proj_v = pull_v * proj_scalar;
+                let perp_v = proj_v - duderel;
+                let z = perp_v.norm() * -0.07;
+                // update recomputed shot_vel: the velocity vector an arrow released in this state gets
+                // ... first in 2d space (along the floor)
+                *shot_vel = self.ui.camera.vec_2_to_3(pull_v);
+                // ... and then overwriting the vertical velocity
+                shot_vel[2] = z;
 
-            let new_pull_level = PullLevel::from_shot_vel(*shot_vel);
-            if new_pull_level != *last_pull_level {
-                fn pl_to_audio_index(pl: PullLevel) -> Option<usize> {
-                    Some(match pl {
-                        PullLevel::TooMuch | PullLevel::TooLittle => return None,
-                        PullLevel::Low => 0,
-                        PullLevel::Med => 1,
-                        PullLevel::High => 2,
-                        PullLevel::Max => 3,
-                    })
-                }
-                // stop previous taut noise, play the new one
-                if let Some(index) = pl_to_audio_index(*last_pull_level) {
-                    self.assets.audio.taut[index].stop();
-                }
-                if let Some(index) = pl_to_audio_index(new_pull_level) {
-                    self.assets.audio.taut[index].play().unwrap();
-                }
-                *last_pull_level = new_pull_level;
-            }
-            match &mut self.net_core {
-                NetCore::Solo => {}
-                NetCore::Client(endpoint) => {
-                    endpoint
-                        .send(&Serverward::ArcherShotVelResync(Cow::Borrowed(&archer.shot_vel)))
-                        .unwrap();
-                }
-                NetCore::Server { clients, .. } => {
-                    clients
-                        .broadcast(&Clientward::ArcherShotVelResync {
-                            index: self.ui.controlling,
-                            shot_vel: Cow::Borrowed(&archer.shot_vel),
-                        })
-                        .unwrap();
+                last_pull_level.update(*shot_vel, &mut self.assets);
+                match &mut self.net_core {
+                    NetCore::Solo => {}
+                    NetCore::Client(endpoint) => {
+                        endpoint
+                            .send(&Serverward::ArcherShotVelResync(Cow::Borrowed(&archer.shot_vel)))
+                            .unwrap();
+                    }
+                    NetCore::Server { clients, .. } => {
+                        clients
+                            .broadcast(&Clientward::ArcherShotVelResync {
+                                index: self.ui.controlling,
+                                shot_vel: Cow::Borrowed(&archer.shot_vel),
+                            })
+                            .unwrap();
+                    }
                 }
             }
-        }
-        if let Some(RclickState { anchor_angle }) = &mut self.ui.rclick_state {
-            let diff_is: Pt2 = mouse_at
-                - self.ui.camera.pt_3_to_2(self.archers[self.ui.controlling].entity.pos).coords;
-            let angle_is = Camera::rot_of_xy(diff_is.coords);
-            let angle_diff = angle_is - *anchor_angle;
-            self.ui.camera.world_rot += angle_diff;
-            *anchor_angle = angle_is;
+            if let Some(RclickState { anchor_angle }) = &mut maks.rclick_state {
+                let diff_is: Pt2 = mouse_at
+                    - self.ui.camera.pt_3_to_2(self.archers[self.ui.controlling].entity.pos).coords;
+                let angle_is = Camera::rot_of_xy(diff_is.coords);
+                let angle_diff = angle_is - *anchor_angle;
+                self.ui.camera.world_rot += angle_diff;
+                *anchor_angle = angle_is;
+            }
         }
     }
 

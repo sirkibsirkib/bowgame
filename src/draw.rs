@@ -69,24 +69,6 @@ impl MyGame {
 
                 if archer_index == self.ui.controlling {
                     // the player controls this archer! draw extra UI stuff
-                    let lclick_state = self.ui.lclick_state.as_ref().unwrap();
-                    let end: Pt2 = ggez::input::mouse::position(ctx).into();
-                    let diff = end - lclick_state.start;
-                    let difflen = diff.norm();
-                    let diffang = Camera::rot_of_xy(diff);
-                    let color = if lclick_state.last_pull_level.can_shoot() { WHITE } else { RED };
-                    // draw line that player uses to "pull" the bow. White if they COULD loose an arrow
-                    graphics::draw(
-                        ctx,
-                        &self.assets.tex.unit_line,
-                        DrawParam {
-                            color,
-                            dest: lclick_state.start.into(),
-                            rotation: diffang,
-                            scale: [difflen, 1.].into(),
-                            ..Default::default()
-                        },
-                    )?;
                     if self.ui.aim_assist >= 1 {
                         // minimal aim assist is toggled.
                         // draw the little angle and pitch line overlay
@@ -139,6 +121,30 @@ impl MyGame {
                                 DrawParam {
                                     dest: self.ui.camera.pt_3_to_2(arrow.pos).into(),
                                     scale: [8., 8. / ROOT_OF_2].into(),
+                                    ..Default::default()
+                                },
+                            )?;
+                        }
+                    }
+                    match &self.ui.control_state {
+                        ControlState::Controller(_) => {}
+                        ControlState::MouseAndKeyboard(maks) => {
+                            let lclick_state = maks.lclick_state.as_ref().unwrap();
+                            let end: Pt2 = ggez::input::mouse::position(ctx).into();
+                            let diff = end - lclick_state.start;
+                            let difflen = diff.norm();
+                            let diffang = Camera::rot_of_xy(diff);
+                            let color =
+                                if lclick_state.last_pull_level.can_shoot() { WHITE } else { RED };
+                            // draw line that player uses to "pull" the bow. White if they COULD loose an arrow
+                            graphics::draw(
+                                ctx,
+                                &self.assets.tex.unit_line,
+                                DrawParam {
+                                    color,
+                                    dest: lclick_state.start.into(),
+                                    rotation: diffang,
+                                    scale: [difflen, 1.].into(),
                                     ..Default::default()
                                 },
                             )?;
