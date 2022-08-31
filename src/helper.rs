@@ -121,7 +121,6 @@ impl TryInto<UiConfig> for UiConfigSerde {
             })
         }
         Ok(UiConfig {
-            use_controller: self.use_controller,
             up: keycode(&self.up)?,
             down: keycode(&self.down)?,
             left: keycode(&self.left)?,

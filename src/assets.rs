@@ -67,10 +67,6 @@ impl Assets {
                 //
                 ggez::audio::Source::new(ctx, "/thud1.wav").unwrap(),
             ],
-            click: [
-                //
-                ggez::audio::Source::new(ctx, "/click1.wav").unwrap(),
-            ],
         };
         Assets { audio, tex }
     }
