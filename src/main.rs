@@ -1,6 +1,4 @@
-use core::convert::TryInto;
-use core::f32::consts::PI;
-use core::str::FromStr;
+use core::{convert::TryInto, f32::consts::PI, str::FromStr};
 use ggez::{
     audio::{SoundSource, Source},
     conf::{FullscreenType, WindowMode},
@@ -19,11 +17,11 @@ use rand::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_derive::{Deserialize, Serialize as _};
-use std::borrow::Cow;
-use std::io::Read;
-use std::net::SocketAddr;
-use std::net::TcpListener;
-use std::net::TcpStream;
+use std::{
+    borrow::Cow,
+    io::Read,
+    net::{SocketAddr, TcpListener, TcpStream},
+};
 
 #[derive(Default)]
 struct Pressing {
@@ -206,7 +204,7 @@ fn main() {
         });
         // parse config file
         let mut x: UiConfigSerde = toml::from_str(&s).expect("Failed to parse config toml!");
-        println!("{:?}", &x);
+        println!("{:#?}", &x);
         // use command line args 1 and 2 to overwrite `addr` and `net_mode` config fields if they are provided
         let mut args = std::env::args();
         args.next(); // skip 0th arg (path)
@@ -218,7 +216,6 @@ fn main() {
         }
         x.try_into().expect("Failed to parse config toml!")
     };
-    println!("addr: {:?} net_mode {:?}", &config.addr, &config.net_mode);
     // build the GGEZ context object. manages the windows, event loop, etc.
     let (mut ctx, mut event_loop) = ContextBuilder::new("bowdraw", "Christopher Esterhuyse")
         .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
