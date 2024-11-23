@@ -31,9 +31,12 @@ struct Pressing {
 }
 
 const MIN_VEL: f32 = 9.;
-const MAX_VEL: f32 = 35.;
+const MAX_VEL: f32 = 66.;
+const GRAVITY: f32 = 0.47;
+
 const ROOT_OF_2: f32 = 1.41421356;
-const WIN_DIMS: [f32; 2] = [800., 600.];
+// const WIN_DIMS: [f32; 2] = [800., 600.];
+const WIN_DIMS: [f32; 2] = [960., 540.];
 const BADDIE_SPEED: f32 = 0.5;
 const NUM_BADDIES: usize = 4;
 
@@ -57,6 +60,7 @@ use helper::*;
 mod net;
 use net::*;
 mod draw;
+// mod my_serde;
 
 // points and vectors in screen (2D) and world (3D) spaces.
 type Pt2 = nalgebra::Point2<f32>;
@@ -176,7 +180,11 @@ struct UiConfigSerde {
     addr: String,
     grab_cursor: bool,
 }
+
+struct Kc(KeyCode);
+
 // game-facing Ui type
+#[derive(Debug)]
 struct UiConfig {
     up: KeyCode,
     down: KeyCode,
@@ -221,6 +229,7 @@ fn main() {
         .window_mode(WindowMode { width: WIN_DIMS[0], height: WIN_DIMS[1], ..Default::default() })
         .build()
         .unwrap();
+    ggez::filesystem::mount(&mut ctx, &std::path::Path::new("./resources"), true);
     // grab the cursor if config says to do so
     ggez::input::mouse::set_cursor_grabbed(&mut ctx, config.grab_cursor).unwrap();
     // create master game state object
@@ -258,7 +267,7 @@ impl Entity {
     // (used for arrows only)
     fn grav_and_air_resist(mut v: Vec3) -> Vec3 {
         // gravity
-        v += Pt3::new(0., 0., 0.5).coords;
+        v += Pt3::new(0., 0., GRAVITY).coords;
         // air resistance
         let vquad = v.norm_squared().sqr() + 1.;
         v * vquad.powf(0.996) / vquad
@@ -360,6 +369,15 @@ impl PullLevel {
 
 impl MyGame {
     fn new(ctx: &mut Context, config: UiConfig) -> Self {
+        println!("This is the poor man's control info.");
+        println!(
+            "Press, hold, and drag  left-mouse to draw your bow, and release to release the arrow."
+        );
+        println!(
+            "HINT: several properties of the draw determine the loosed arrow's initial velocity.."
+        );
+        println!("Press, hold, and drag right-mouse to rotate the camera.");
+        println!("Read and write './game_config.toml' to see other controls, e.g., to toggle the aim-assist visualisation level.");
         let mut rng = rand::rngs::SmallRng::from_seed([2; 16]);
         let ui = Ui {
             current_fullscreen: FullscreenType::Windowed,
@@ -370,7 +388,7 @@ impl MyGame {
             rclick_state: None,
             lclick_state: None,
             pressing: Default::default(),
-            aim_assist: 0,
+            aim_assist: 2,
         };
         match ui.config.net_mode {
             NetMode::Client => {
@@ -846,12 +864,18 @@ impl EventHandler for MyGame {
                         }
                     })
                 {
+                    for asset in self.assets.audio.taut.iter_mut() {
+                        asset.stop();
+                    }
                     // yes! we shoot an arrow with entity data `arrow`
                     match &mut self.net_core {
                         NetCore::Client(endpoint) => endpoint
                             .send(&Serverward::ArcherShootArrow(Cow::Borrowed(&arrow)))
                             .unwrap(),
-                        NetCore::Solo => self.arrows.push(arrow),
+                        NetCore::Solo => {
+                            self.assets.audio.loose[0].play().unwrap();
+                            self.arrows.push(arrow)
+                        }
                         NetCore::Server { clients, .. } => {
                             let c = Clientward::ArcherShootArrow {
                                 index: self.ui.controlling,
